@@ -4,10 +4,7 @@ import argparse
 import csv
 import os
 import time
-from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
-
 import cv2
 
 from core.config import Config
