@@ -5,10 +5,10 @@ from typing import Optional
 
 import numpy as np
 
-from ..core.schemas import CVFeatures, WindowFeatures
+from core.schemas import CVFeatures, WindowFeatures
 
 class WindowAggregator:
-    """Rolling window aggregator for CVFeatures -> WindowFeatures."""
+    # Rolling window aggregator for CVFeatures -> WindowFeatures
 
     def __init__(self, fps: float, window_seconds: float = 2.5):
         self.fps = float(fps)

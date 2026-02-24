@@ -5,9 +5,9 @@ from typing import Optional, Tuple
 
 from .config import Config
 from .schemas import CVFeatures, WindowFeatures
-from ..vision.extractor import VisionExtractor
-from ..temporal.aggregation import WindowAggregator
-from ..vision.head_distance import DistanceCalib
+from vision.extractor import VisionExtractor
+from temporal.aggregation import WindowAggregator
+from vision.head_distance import DistanceCalib
 
 
 @dataclass

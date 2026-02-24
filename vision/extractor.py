@@ -1,25 +1,5 @@
 from __future__ import annotations
 
-"""
-vision/extractor.py
-
-Unified frame-level vision feature extractor.
-
-- Uses MediaPipe Tasks FaceLandmarker (see vision/landmarks.py) to obtain 468 face landmarks.
-- Computes:
-    * EAR (left/right/mean)
-    * Blink flag + running blink count
-    * Head pose (yaw/pitch/roll)
-    * Viewing distance (optional) via single-point real-world calibration:
-          Z = Z0 * (s0 / s)
-
-Distance calibration workflow (recommended):
-1) Ask user to sit at a known distance Z0_cm (e.g., 60 cm) measured by a ruler.
-2) Run calibrate_distance_webcam() for ~10s to estimate s0_px (median inter-ocular px distance).
-3) Save (Z0_cm, s0_px) to config and pass as DistanceCalib on startup.
-
-If distance_calib is not provided, distance_cm and distance_cat are returned as None.
-"""
 
 import time
 from dataclasses import dataclass
@@ -27,7 +7,7 @@ from typing import Optional, Tuple, List
 
 import numpy as np
 
-from ..core.schemas import CVFeatures
+from core.schemas import CVFeatures
 from .landmarks import FaceLandmarker, FaceLandmarks
 from .ear import compute_ear_both_eyes
 from .blink import BlinkDetector
@@ -41,12 +21,7 @@ RIGHT_OUTER_EYE = 263
 
 @dataclass(frozen=True)
 class DistanceCalib:
-    """
-    Single-point real-world calibration for viewing distance.
 
-    Z0_cm: known real distance during calibration (cm), measured by ruler
-    s0_px: observed inter-ocular pixel distance at that distance (px)
-    """
     Z0_cm: float
     s0_px: float
 
@@ -69,10 +44,7 @@ def _interocular_px(lms_xy: np.ndarray) -> float:
 
 
 def _estimate_distance_cm(lms_xy: np.ndarray, calib: DistanceCalib) -> Optional[float]:
-    """
-    Z = Z0 * (s0 / s)
-    where s is current inter-ocular px distance.
-    """
+
     s = _interocular_px(lms_xy)
     if not np.isfinite(s) or s <= 0:
         return None
@@ -92,16 +64,6 @@ def _categorize_distance(distance_cm: Optional[float], near_cm: float, far_cm: f
 
 
 class VisionExtractor:
-    """
-    Frame-level vision feature extractor.
-
-    Landmarks API:
-      - Uses FaceLandmarker.detect_xy(frame_bgr) -> FaceLandmarks(xy={idx:(x_px,y_px)})
-
-    Output:
-      - Returns core.schemas.CVFeatures.
-    """
-
     def __init__(
         self,
         *,
@@ -178,20 +140,7 @@ class VisionExtractor:
         show_preview: bool = True,
         min_samples: int = 30,
     ) -> DistanceCalib:
-        """
-        Run webcam for a short duration and compute s0_px (median inter-ocular px distance).
 
-        This method:
-          - collects s values over time (s = ||p33 - p263|| in pixels)
-          - computes s0 = median(s)
-          - sets self.distance_calib = DistanceCalib(Z0_cm, s0)
-
-        Returns:
-            DistanceCalib(Z0_cm, s0_px)
-
-        Tip:
-            Ask user to face camera straight and keep stable posture during calibration.
-        """
         import cv2  # local import to keep extractor import-light
 
         cap = cv2.VideoCapture(camera_id)
