@@ -8,10 +8,10 @@ from typing import Optional, Tuple, List
 import numpy as np
 
 from core.schemas import CVFeatures
-from .landmarks import FaceLandmarker, FaceLandmarks
-from .ear import compute_ear_both_eyes
-from .blink import BlinkDetector
-from .head_pose import estimate_head_pose_pnp
+from landmarks import FaceLandmarker, FaceLandmarks
+from ear import compute_ear_both_eyes
+from blink import BlinkDetector
+from head_pose import estimate_head_pose_pnp
 
 
 # MediaPipe Face Mesh indices: outer eye corners (commonly used)
