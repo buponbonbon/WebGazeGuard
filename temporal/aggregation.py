@@ -22,8 +22,8 @@ class WindowAggregator:
         self.buf_roll = deque(maxlen=self.maxlen)
         self.buf_dist_cat = deque(maxlen=self.maxlen)
 
-        self._prev_total_blinks = 0
-        self.blink_count_window = 0
+        # store blink flags per frame instead of cumulative counter
+        self.buf_blink_flag = deque(maxlen=self.maxlen)
 
     def update(self, feat: CVFeatures):
         self.buf_ts.append(int(feat.timestamp_ms))
@@ -39,10 +39,13 @@ class WindowAggregator:
         if feat.distance_cat is not None:
             self.buf_dist_cat.append(str(feat.distance_cat))
 
-        # blink counting via total_blinks delta (stateful)
+        # blink counting per frame (1 if new blink occurred)
         tb = int(feat.total_blinks)
-        if tb > self._prev_total_blinks:
-            self.blink_count_window += (tb - self._prev_total_blinks)
+        if not hasattr(self, "_prev_total_blinks"):
+            self._prev_total_blinks = tb
+
+        blink_flag = 1 if tb > self._prev_total_blinks else 0
+        self.buf_blink_flag.append(blink_flag)
         self._prev_total_blinks = tb
 
     def ready(self) -> bool:
@@ -64,7 +67,9 @@ class WindowAggregator:
         rol_s = safe_stats(self.buf_roll)
 
         minutes = self.window_seconds / 60.0
-        blink_rate_bpm = (self.blink_count_window / minutes) if minutes > 0 else None
+
+        blink_count_window = int(np.sum(self.buf_blink_flag)) if len(self.buf_blink_flag) > 0 else 0
+        blink_rate_bpm = (blink_count_window / minutes) if minutes > 0 else None
 
         # mode of distance category
         dist_mode = None
@@ -87,6 +92,3 @@ class WindowAggregator:
             blink_rate_bpm=float(blink_rate_bpm) if blink_rate_bpm is not None else None,
             distance_cat_mode=dist_mode,
         )
-
-    def reset_window_counters(self):
-        self.blink_count_window = 0
