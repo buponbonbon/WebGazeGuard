@@ -1,37 +1,3 @@
-"""
-vision/head_distance.py
-
-Viewing distance estimation via *single-point real-world calibration*.
-
-We avoid assuming an average interpupillary distance (e.g., 6.3 cm).
-Instead, we calibrate using one known distance Z0 (cm) and the observed
-inter-ocular pixel distance s0 (px) at that moment.
-
-Definitions:
-- s  : inter-ocular distance in pixels for the current frame
-- s0 : inter-ocular distance in pixels during calibration
-- Z  : estimated camera-to-face distance in cm for the current frame
-- Z0 : known camera-to-face distance in cm during calibration
-
-Model (similar triangles / pinhole camera):
-    Z ∝ 1 / s
-
-Single-point calibration gives:
-    Z = Z0 * (s0 / s)
-
-Notes:
-- Requires only *one* real-world measurement (Z0) and does not need the
-  true physical eye distance.
-- Accuracy depends on stable head pose and consistent landmark detection.
-- Use outer eye corners (MediaPipe landmarks 33 and 263) for s.
-
-Typical workflow:
-1) Ask user to sit at a known distance Z0 (e.g., 60 cm) measured by ruler.
-2) Capture a few frames and compute median s0.
-3) Save (Z0, s0) in config.
-4) Runtime: compute s each frame and estimate Z.
-
-"""
 
 from __future__ import annotations
 
