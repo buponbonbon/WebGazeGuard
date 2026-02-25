@@ -1,25 +1,7 @@
-"""
-ml_cnn/dataset.py
-
-Scalable H5 dataset + subject-independent split (no leakage).
-
-Key idea:
-- Your H5 contains ~45,000 sessions with a large total number of frames (~20M).
-- We should NOT load all frames into RAM.
-- We sample K frames per session to control dataset size, and we read samples lazily from H5.
-
-Default behavior:
-- Sample k_per_session=1 frame per session (≈ 45k samples)
-- Subject-level split: train/val/test subjects are disjoint
-
-You can increase k_per_session (e.g., 2–8) for more diversity without exploding size.
-"""
-
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import h5py
 import numpy as np
@@ -27,6 +9,7 @@ import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 
+# Lazy H5 dataset with subject-independent split (no leakage).
 
 @dataclass(frozen=True)
 class H5Sample:
@@ -63,11 +46,7 @@ def build_sample_index(
     k_per_session: int = 1,
     seed: int = 42,
 ) -> List[H5Sample]:
-    """
-    Build a list of (subject, session, frame_idx) samples.
-
-    This does NOT load images into memory; it only scans metadata and creates an index.
-    """
+    # Scan metadata only; do not load images into RAM.
     rng = np.random.default_rng(seed)
     samples: List[H5Sample] = []
     with h5py.File(h5_path, "r") as f:
@@ -75,8 +54,12 @@ def build_sample_index(
             if subject not in f:
                 continue
             for session in _list_sessions(f, subject):
+                # Use the minimum length to avoid image/gaze mismatch.
                 imgs = f[subject]["image"][session]
-                T = int(imgs.shape[0])
+                gazes = f[subject]["gaze"][session]
+                T_img = int(imgs.shape[0])
+                T_gaze = int(gazes.shape[0])
+                T = min(T_img, T_gaze)
                 if T <= 0:
                     continue
                 idxs = _sample_indices(rng, T, k_per_session)
@@ -86,9 +69,7 @@ def build_sample_index(
 
 
 def _ensure_nhwc(img: np.ndarray) -> np.ndarray:
-    """
-    Ensure image shape is (H, W, C). Supports (H,W) or (H,W,C).
-    """
+    # Ensure image shape is (H, W, C).
     if img.ndim == 2:
         return img[..., None]
     if img.ndim == 3:
@@ -97,13 +78,7 @@ def _ensure_nhwc(img: np.ndarray) -> np.ndarray:
 
 
 class H5EyeGazeDataset(Dataset):
-    """
-    Lazy dataset reading from H5.
-
-    Notes on performance:
-    - Keep num_workers=0 for simplest behavior.
-    - If you increase num_workers, each worker will open its own H5 handle safely.
-    """
+    # Lazy dataset reading from H5 (each process opens its own handle).
 
     def __init__(
         self,
@@ -111,7 +86,6 @@ class H5EyeGazeDataset(Dataset):
         samples: Sequence[H5Sample],
         grayscale: bool = True,
         normalize: bool = True,
-        # Optional: resize to reduce compute/memory; set None to keep original size
         resize_hw: Optional[Tuple[int, int]] = None,  # (H, W)
     ):
         self.h5_path = h5_path
@@ -122,12 +96,16 @@ class H5EyeGazeDataset(Dataset):
 
         self._h5: Optional[h5py.File] = None  # opened lazily per process
 
-        # Infer output_dim by reading one sample gaze vector (if available)
+        # Infer output_dim from a safe sample.
         self.output_dim = 1
         if len(self.samples) > 0:
             with h5py.File(self.h5_path, "r") as f:
                 s0 = self.samples[0]
-                g = f[s0.subject]["gaze"][s0.session][s0.idx]
+                T_img = int(f[s0.subject]["image"][s0.session].shape[0])
+                T_gaze = int(f[s0.subject]["gaze"][s0.session].shape[0])
+                T = max(1, min(T_img, T_gaze))
+                idx = int(s0.idx) % T
+                g = f[s0.subject]["gaze"][s0.session][idx]
                 g = np.asarray(g)
                 self.output_dim = int(g.shape[-1]) if g.ndim > 0 else 1
 
@@ -136,7 +114,7 @@ class H5EyeGazeDataset(Dataset):
 
     def _get_h5(self) -> h5py.File:
         if self._h5 is None:
-            # swmr=True can help for concurrent reads; not required but safe
+            # swmr = True helps for concurrent reads, safe for read-only.
             self._h5 = h5py.File(self.h5_path, "r", swmr=True)
         return self._h5
 
@@ -144,8 +122,14 @@ class H5EyeGazeDataset(Dataset):
         s = self.samples[i]
         f = self._get_h5()
 
-        img = f[s.subject]["image"][s.session][s.idx]
-        gaze = f[s.subject]["gaze"][s.session][s.idx]
+        # Avoid out-of-range if image/gaze lengths differ.
+        T_img = int(f[s.subject]["image"][s.session].shape[0])
+        T_gaze = int(f[s.subject]["gaze"][s.session].shape[0])
+        T = max(1, min(T_img, T_gaze))
+        idx = int(s.idx) % T
+
+        img = f[s.subject]["image"][s.session][idx]
+        gaze = f[s.subject]["gaze"][s.session][idx]
 
         img = np.asarray(img)
         gaze = np.asarray(gaze, dtype=np.float32)
@@ -156,9 +140,8 @@ class H5EyeGazeDataset(Dataset):
         # Convert to float32
         img = img.astype(np.float32)
 
-        # Optional grayscale (if original has 3 channels)
+        # Optional grayscale
         if self.grayscale and img.shape[-1] != 1:
-            # simple luminance conversion
             if img.shape[-1] >= 3:
                 img = 0.299 * img[..., 0] + 0.587 * img[..., 1] + 0.114 * img[..., 2]
                 img = img[..., None]
@@ -167,7 +150,6 @@ class H5EyeGazeDataset(Dataset):
 
         # Optional resize
         if self.resize_hw is not None:
-            # Use OpenCV if available, else fall back to simple nearest-neighbor via numpy
             H, W = self.resize_hw
             try:
                 import cv2
@@ -178,15 +160,15 @@ class H5EyeGazeDataset(Dataset):
                     resized = resized[..., None]
                 img = resized.astype(np.float32)
             except Exception:
-                # naive fallback (nearest) to avoid hard dependency
+                # naive fallback (nearest)
                 img2d = img[..., 0]
                 ys = (np.linspace(0, img2d.shape[0] - 1, H)).astype(np.int64)
                 xs = (np.linspace(0, img2d.shape[1] - 1, W)).astype(np.int64)
                 img = img2d[ys][:, xs][..., None].astype(np.float32)
 
-        # Normalize to [0,1] if needed
+        # Normalize to [0,1]
         if self.normalize:
-            if img.max() > 1.0:
+            if img.size > 0 and img.max() > 1.0:
                 img = img / 255.0
 
         # To torch: (C,H,W)
@@ -215,21 +197,7 @@ def load_dataloaders(
     resize_hw: Optional[Tuple[int, int]] = None,
     num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    """
-    Create subject-independent train/val/test loaders.
-
-    Args:
-        h5_path: path to H5 file.
-        test_size: fraction of subjects for test split.
-        val_ratio: fraction of remaining train subjects for val split.
-        k_per_session: how many frames to sample per session (1–8 typical).
-        grayscale: produce 1-channel images (recommended if your model uses input_channels=1).
-        resize_hw: resize images to (H,W) to match your model (e.g., (64,64)).
-        num_workers: DataLoader workers; keep 0 for simplest H5 reading.
-
-    Returns:
-        train_loader, val_loader, test_loader, output_dim
-    """
+    # Create subject-independent train/val/test loaders.
     subjects = _list_subjects(h5_path, subject_prefix="p")
     if len(subjects) == 0:
         raise ValueError("No subjects found in H5 (expected keys starting with 'p').")
@@ -259,8 +227,14 @@ def load_dataloaders(
 
     output_dim = train_dataset.output_dim
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+    )
 
     return train_loader, val_loader, test_loader, output_dim
