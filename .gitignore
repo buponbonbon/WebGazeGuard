@@ -3,3 +3,21 @@ __pycache__/
 *.pyc
 *.task
 logs/
+
+# Large dataset files
+*.h5
+*.hdf5
+
+# Trained model checkpoints
+*.pt
+*.pth
+
+# Exported models
+*.onnx
+
+# CSV experiment logs
+*.csv
+
+# Local environment
+.env
+venv/
