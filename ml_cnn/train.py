@@ -1,15 +1,3 @@
-"""
-ml_cnn/train.py
-
-Training script for gaze regression.
-
-Supports:
-- custom CNN (default)
-- ResNet-18 regression head
-
-Backward compatible:
-- If you run without args, it will train custom CNN on 'MPIIFaceGaze.h5' (like before).
-"""
 
 from __future__ import annotations
 
@@ -76,6 +64,8 @@ def train(
             X, y = X.to(DEVICE), y.to(DEVICE)
             optimizer.zero_grad()
             preds = model(X)
+            if preds.ndim == 2 and preds.shape[1] == 1 and y.ndim == 1:
+                y = y.unsqueeze(1)
             loss = criterion(preds, y)
             loss.backward()
             optimizer.step()
