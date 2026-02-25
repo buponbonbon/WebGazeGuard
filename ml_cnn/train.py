@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import argparse
@@ -78,7 +77,10 @@ def train(
         with torch.no_grad():
             for X, y in val_loader:
                 X, y = X.to(DEVICE), y.to(DEVICE)
-                val_loss += criterion(model(X), y).item() * X.size(0)
+                preds = model(X)
+                if preds.ndim == 2 and preds.shape[1] == 1 and y.ndim == 1:
+                    y = y.unsqueeze(1)
+                val_loss += criterion(preds, y).item() * X.size(0)
         val_loss /= max(1, len(val_loader.dataset))
 
         print(f"Epoch [{epoch+1}/{epochs}] Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}")
@@ -101,7 +103,8 @@ def train(
     y_true_list, y_pred_list = [], []
     with torch.no_grad():
         for X, y in test_loader:
-            preds = model(X.to(DEVICE)).detach().cpu().numpy()
+            X = X.to(DEVICE)
+            preds = model(X).detach().cpu().numpy()
             y_pred_list.append(preds)
             y_true_list.append(y.numpy())
 
