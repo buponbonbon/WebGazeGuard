@@ -11,14 +11,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--h5", required=True, help="Path to MPIIFaceGaze.h5")
     ap.add_argument("--subject_prefix", default="p", help="Subject key prefix (default: p)")
-    ap.add_argument("--n_samples", type=int, default=200000, help="Random gaze samples for stats/plots")
+    ap.add_argument("--n_samples", type=int, default=200000, help="Random session samples for gaze stats/plots")
     ap.add_argument("--seed", type=int, default=42, help="Random seed")
     ap.add_argument("--out_dir", default="analysis_outputs", help="Output folder for plots")
     ap.add_argument("--no_plots", action="store_true", help="Disable saving plots")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-
     rng = np.random.default_rng(args.seed)
 
     with h5py.File(args.h5, "r") as f:
@@ -26,17 +25,29 @@ def main():
         if len(subjects) == 0:
             raise SystemExit("No subjects found. Check subject_prefix.")
 
+        ex_subj = subjects[0]
+        ex_sess = list(f[ex_subj]["image"].keys())[0]
+        ex_img_shape = f[ex_subj]["image"][ex_sess].shape
+        ex_gaze_shape = f[ex_subj]["gaze"][ex_sess].shape
+
+        print("===================================")
+        print("EXAMPLE SHAPES (first subject/session)")
+        print("===================================")
+        print("example subject:", ex_subj)
+        print("example session:", ex_sess)
+        print("image shape:", ex_img_shape)
+        print("gaze shape: ", ex_gaze_shape)
+
+        # Structure scan
         total_sessions = 0
         total_frames_img = 0
-        total_frames_gaze = 0
-
-        mismatch_sessions = 0
-        zero_len_sessions = 0
-
         sessions_per_subject = []
-        frames_per_session_min = []
+        frames_per_session = []
 
-        # Quick structure scan (metadata only)
+        gaze_dim_set = set()
+        gaze_nan_sessions = 0
+        gaze_inf_sessions = 0
+
         for subj in subjects:
             if "image" not in f[subj] or "gaze" not in f[subj]:
                 continue
@@ -47,65 +58,49 @@ def main():
 
             for s in sessions:
                 imgs = f[subj]["image"][s]
-                gazes = f[subj]["gaze"][s]
-
                 Ti = int(imgs.shape[0])
-                Tg = int(gazes.shape[0])
-
                 total_frames_img += Ti
-                total_frames_gaze += Tg
+                frames_per_session.append(Ti)
 
-                if Ti == 0 or Tg == 0:
-                    zero_len_sessions += 1
-
-                if Ti != Tg:
-                    mismatch_sessions += 1
-
-                frames_per_session_min.append(min(Ti, Tg))
+                g = np.asarray(f[subj]["gaze"][s][:], dtype=np.float32).reshape(-1)
+                gaze_dim_set.add(int(g.shape[0]))
+                if np.isnan(g).any():
+                    gaze_nan_sessions += 1
+                if np.isinf(g).any():
+                    gaze_inf_sessions += 1
 
         sps = np.array(sessions_per_subject, dtype=np.int64) if sessions_per_subject else np.array([0])
-        fps = np.array(frames_per_session_min, dtype=np.int64) if frames_per_session_min else np.array([0])
+        fps = np.array(frames_per_session, dtype=np.int64) if frames_per_session else np.array([0])
 
-        print("===================================")
+        gaze_dims = sorted(list(gaze_dim_set))
+        gaze_dim_str = ", ".join(str(d) for d in gaze_dims) if gaze_dims else "unknown"
+
+        print("\n===================================")
         print("DATASET STRUCTURE SUMMARY")
         print("===================================")
         print("TOTAL SUBJECTS:", len(subjects))
         print("TOTAL SESSIONS:", int(total_sessions))
         print("TOTAL FRAMES (image):", int(total_frames_img))
-        print("TOTAL FRAMES (gaze): ", int(total_frames_gaze))
-        print("MISMATCH sessions (Ti != Tg):", int(mismatch_sessions))
-        print("ZERO-LENGTH sessions:", int(zero_len_sessions))
+        print("FRAMES PER SESSION (image) min/max/avg:", int(fps.min()), int(fps.max()), float(fps.mean()))
+        print("SESSIONS PER SUBJECT min/max/avg:", int(sps.min()), int(sps.max()), float(sps.mean()))
+        print("GAZE VECTOR DIM (per session):", gaze_dim_str)
+        print("SESSIONS with NaN in gaze:", int(gaze_nan_sessions))
+        print("SESSIONS with Inf in gaze:", int(gaze_inf_sessions))
 
-        print("\n=== SESSIONS PER SUBJECT ===")
-        print("min / max / avg:", int(sps.min()), int(sps.max()), float(sps.mean()))
-
-        print("\n=== FRAMES PER SESSION (min(T_img, T_gaze)) ===")
-        print("min / max / avg:", int(fps.min()), int(fps.max()), float(fps.mean()))
-
-        # Random sampling gaze labels (avoid loading all)
+        # Sample gaze vectors (per session)
         print("\n===================================")
-        print("GAZE LABEL SANITY CHECK (SAMPLED)")
+        print("GAZE LABEL STATS (SAMPLED SESSIONS)")
         print("===================================")
 
-        gaze_list = []
         sess_cache = {subj: list(f[subj]["gaze"].keys()) for subj in subjects}
-
+        gaze_list = []
         for _ in range(args.n_samples):
             subj = rng.choice(subjects)
             sessions = sess_cache[subj]
             if not sessions:
                 continue
             sess = rng.choice(sessions)
-
-            gazes = f[subj]["gaze"][sess]
-            T = int(gazes.shape[0])
-            if T <= 0:
-                continue
-
-            idx = int(rng.integers(0, T))
-            g = np.asarray(gazes[idx], dtype=np.float32)
-            if g.ndim == 0:
-                g = np.array([g], dtype=np.float32)
+            g = np.asarray(f[subj]["gaze"][sess][:], dtype=np.float32).reshape(-1)
             gaze_list.append(g)
 
         if len(gaze_list) == 0:
@@ -116,15 +111,16 @@ def main():
 
         nan_count = int(np.isnan(gaze).sum())
         inf_count = int(np.isinf(gaze).sum())
-        print("NaN count:", nan_count)
-        print("Inf count:", inf_count)
+        print("NaN count (elements):", nan_count)
+        print("Inf count (elements):", inf_count)
 
-        dims = min(2, gaze.shape[1])
-        names = ["yaw", "pitch"][:dims]
-        for j, name in enumerate(names):
+        dims = gaze.shape[1]
+        names = ["yaw", "pitch"] if dims >= 2 else [f"dim{i}" for i in range(dims)]
+
+        for j in range(min(2, dims)):
             x = gaze[:, j]
             p1, p5, p50, p95, p99 = np.percentile(x, [1, 5, 50, 95, 99])
-            print(f"\n== {name} stats ==")
+            print(f"\n== {names[j]} stats ==")
             print("min/max:", float(x.min()), float(x.max()))
             print("mean/std:", float(x.mean()), float(x.std()))
             print("p1/p5/p50/p95/p99:", [float(p1), float(p5), float(p50), float(p95), float(p99)])
@@ -132,33 +128,31 @@ def main():
         if args.no_plots:
             return
 
+        # Save plots
         if dims >= 1:
             plt.figure()
             plt.hist(gaze[:, 0], bins=100)
-            plt.title("Histogram yaw (sampled)")
+            plt.title("Histogram yaw (sampled sessions)")
             plt.xlabel("yaw")
             plt.ylabel("count")
-            out1 = os.path.join(args.out_dir, "hist_yaw.png")
-            plt.savefig(out1, dpi=150, bbox_inches="tight")
+            plt.savefig(os.path.join(args.out_dir, "hist_yaw.png"), dpi=150, bbox_inches="tight")
             plt.close()
 
         if dims >= 2:
             plt.figure()
             plt.hist(gaze[:, 1], bins=100)
-            plt.title("Histogram pitch (sampled)")
+            plt.title("Histogram pitch (sampled sessions)")
             plt.xlabel("pitch")
             plt.ylabel("count")
-            out2 = os.path.join(args.out_dir, "hist_pitch.png")
-            plt.savefig(out2, dpi=150, bbox_inches="tight")
+            plt.savefig(os.path.join(args.out_dir, "hist_pitch.png"), dpi=150, bbox_inches="tight")
             plt.close()
 
             plt.figure()
             plt.scatter(gaze[:, 0], gaze[:, 1], s=1)
-            plt.title("Yaw vs Pitch (sampled)")
+            plt.title("Yaw vs Pitch (sampled sessions)")
             plt.xlabel("yaw")
             plt.ylabel("pitch")
-            out3 = os.path.join(args.out_dir, "scatter_yaw_pitch.png")
-            plt.savefig(out3, dpi=150, bbox_inches="tight")
+            plt.savefig(os.path.join(args.out_dir, "scatter_yaw_pitch.png"), dpi=150, bbox_inches="tight")
             plt.close()
 
         print("\nSaved plots to:", os.path.abspath(args.out_dir))
