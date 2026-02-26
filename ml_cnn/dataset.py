@@ -10,12 +10,14 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 
 # Lazy H5 dataset with subject-independent split (no leakage).
+# NOTE: In this H5, gaze is stored per-session as a 2D vector (shape (2,)).
+# Images are stored per-session as a sequence of frames (shape (T, H, W, C)).
 
 @dataclass(frozen=True)
 class H5Sample:
     subject: str
     session: str
-    idx: int
+    idx: int  # frame index inside image[session]
 
 
 def _list_subjects(h5_path: str, subject_prefix: str = "p") -> List[str]:
@@ -25,7 +27,6 @@ def _list_subjects(h5_path: str, subject_prefix: str = "p") -> List[str]:
 
 
 def _list_sessions(h5_file: h5py.File, subject: str) -> List[str]:
-    # sessions are keys under f[subject]['image']
     return list(h5_file[subject]["image"].keys())
 
 
@@ -36,7 +37,6 @@ def _sample_indices(rng: np.random.Generator, T: int, k: int) -> np.ndarray:
         return np.array([int(rng.integers(0, T))], dtype=np.int64)
     if T >= k:
         return rng.choice(T, size=k, replace=False).astype(np.int64)
-    # if session is short, allow replacement
     return rng.choice(T, size=k, replace=True).astype(np.int64)
 
 
@@ -54,22 +54,17 @@ def build_sample_index(
             if subject not in f:
                 continue
             for session in _list_sessions(f, subject):
-                # Use the minimum length to avoid image/gaze mismatch.
                 imgs = f[subject]["image"][session]
-                gazes = f[subject]["gaze"][session]
-                T_img = int(imgs.shape[0])
-                T_gaze = int(gazes.shape[0])
-                T = min(T_img, T_gaze)
-                if T <= 0:
+                T_img = int(imgs.shape[0])  # frames per session
+                if T_img <= 0:
                     continue
-                idxs = _sample_indices(rng, T, k_per_session)
+                idxs = _sample_indices(rng, T_img, k_per_session)
                 for idx in idxs:
                     samples.append(H5Sample(subject=subject, session=session, idx=int(idx)))
     return samples
 
 
 def _ensure_nhwc(img: np.ndarray) -> np.ndarray:
-    # Ensure image shape is (H, W, C).
     if img.ndim == 2:
         return img[..., None]
     if img.ndim == 3:
@@ -96,25 +91,20 @@ class H5EyeGazeDataset(Dataset):
 
         self._h5: Optional[h5py.File] = None  # opened lazily per process
 
-        # Infer output_dim from a safe sample.
-        self.output_dim = 1
+        # Infer output_dim from one session-level gaze vector.
+        self.output_dim = 2
         if len(self.samples) > 0:
             with h5py.File(self.h5_path, "r") as f:
                 s0 = self.samples[0]
-                T_img = int(f[s0.subject]["image"][s0.session].shape[0])
-                T_gaze = int(f[s0.subject]["gaze"][s0.session].shape[0])
-                T = max(1, min(T_img, T_gaze))
-                idx = int(s0.idx) % T
-                g = f[s0.subject]["gaze"][s0.session][idx]
-                g = np.asarray(g)
-                self.output_dim = int(g.shape[-1]) if g.ndim > 0 else 1
+                g = np.asarray(f[s0.subject]["gaze"][s0.session][:])
+                g = g.reshape(-1)
+                self.output_dim = int(g.shape[0])
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def _get_h5(self) -> h5py.File:
         if self._h5 is None:
-            # swmr = True helps for concurrent reads, safe for read-only.
             self._h5 = h5py.File(self.h5_path, "r", swmr=True)
         return self._h5
 
@@ -122,22 +112,16 @@ class H5EyeGazeDataset(Dataset):
         s = self.samples[i]
         f = self._get_h5()
 
-        # Avoid out-of-range if image/gaze lengths differ.
         T_img = int(f[s.subject]["image"][s.session].shape[0])
-        T_gaze = int(f[s.subject]["gaze"][s.session].shape[0])
-        T = max(1, min(T_img, T_gaze))
-        idx = int(s.idx) % T
+        idx = int(s.idx) % max(1, T_img)
 
         img = f[s.subject]["image"][s.session][idx]
-        gaze = f[s.subject]["gaze"][s.session][idx]
+        gaze = f[s.subject]["gaze"][s.session][:]  # session-level (2,)
 
         img = np.asarray(img)
-        gaze = np.asarray(gaze, dtype=np.float32)
+        gaze = np.asarray(gaze, dtype=np.float32).reshape(-1)
 
-        # Ensure HWC
         img = _ensure_nhwc(img)
-
-        # Convert to float32
         img = img.astype(np.float32)
 
         # Optional grayscale
@@ -153,14 +137,12 @@ class H5EyeGazeDataset(Dataset):
             H, W = self.resize_hw
             try:
                 import cv2
-
                 img2d = img[..., 0] if img.shape[-1] == 1 else img
                 resized = cv2.resize(img2d, (W, H), interpolation=cv2.INTER_LINEAR)
                 if resized.ndim == 2:
                     resized = resized[..., None]
                 img = resized.astype(np.float32)
             except Exception:
-                # naive fallback (nearest)
                 img2d = img[..., 0]
                 ys = (np.linspace(0, img2d.shape[0] - 1, H)).astype(np.int64)
                 xs = (np.linspace(0, img2d.shape[1] - 1, W)).astype(np.int64)
@@ -171,7 +153,6 @@ class H5EyeGazeDataset(Dataset):
             if img.size > 0 and img.max() > 1.0:
                 img = img / 255.0
 
-        # To torch: (C,H,W)
         x = torch.from_numpy(img).permute(2, 0, 1).float()
         y = torch.from_numpy(gaze).float()
 
@@ -197,7 +178,6 @@ def load_dataloaders(
     resize_hw: Optional[Tuple[int, int]] = None,
     num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    # Create subject-independent train/val/test loaders.
     subjects = _list_subjects(h5_path, subject_prefix="p")
     if len(subjects) == 0:
         raise ValueError("No subjects found in H5 (expected keys starting with 'p').")
@@ -210,7 +190,6 @@ def load_dataloaders(
         train_subjects, test_size=val_ratio, random_state=seed, shuffle=True
     )
 
-    # Build sample indices (lazy)
     train_samples = build_sample_index(h5_path, train_subjects, k_per_session=k_per_session, seed=seed)
     val_samples = build_sample_index(h5_path, val_subjects, k_per_session=k_per_session, seed=seed + 1)
     test_samples = build_sample_index(h5_path, test_subjects, k_per_session=k_per_session, seed=seed + 2)
