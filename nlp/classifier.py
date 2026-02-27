@@ -1,15 +1,19 @@
+# nlp/classifier.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Union, Optional
+from typing import Dict, List, Union, Optional, Tuple
+import os
 
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModel
 
 try:
+    # package import
     from .text_preprocess import preprocess_text
 except ImportError:
+    # script import
     from text_preprocess import preprocess_text
 
 
@@ -19,12 +23,27 @@ EN2VI = {"None": "None", "Mild": "Nhẹ", "Moderate": "Vừa", "Severe": "Nặng
 
 @dataclass
 class NLPFeatures:
-    """Module2-friendly output."""
+    #Backward-compatible output
     discomfort_level: int
     severity_label: str
     confidence: float
     probabilities: Dict[str, float]
     original_text: str
+
+
+def _as_device(device: Union[str, torch.device, None]) -> torch.device:
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device) if isinstance(device, str) else device
+
+
+def _try_core_nlpfeatures() -> Optional[type]:
+
+    try:
+        from core.schemas import NLPFeatures as CoreNLPFeatures  # type: ignore
+        return CoreNLPFeatures
+    except Exception:
+        return None
 
 
 class PhoBERTClassifier(nn.Module):
@@ -34,32 +53,35 @@ class PhoBERTClassifier(nn.Module):
         num_labels: int = 4,
         dropout: float = 0.3,
         max_length: int = 256,
+        tokenizer_name: Optional[str] = None,
+        local_files_only: bool = False,
     ):
         super().__init__()
         self.model_name = model_name
         self.num_labels = num_labels
         self.max_length = max_length
+        self.local_files_only = local_files_only
 
-        self.encoder = AutoModel.from_pretrained(model_name)
+
+        self.encoder = AutoModel.from_pretrained(model_name, local_files_only=local_files_only)
         hidden_size = self.encoder.config.hidden_size
-
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hidden_size, num_labels),
         )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        tok_name = tokenizer_name or model_name
+        self.tokenizer = AutoTokenizer.from_pretrained(tok_name, local_files_only=local_files_only)
 
     def forward(self, input_ids, attention_mask):
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
         cls_emb = outputs.last_hidden_state[:, 0, :]
         return self.classifier(cls_emb)
 
-    def _encode_texts(self, texts: List[str], max_length: Optional[int] = None):
-
+    def _encode_texts(self, texts: List[str], max_length: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         if max_length is None:
             max_length = self.max_length
-
         texts = [preprocess_text(t, mode="phobert", lowercase=False) for t in texts]
         enc = self.tokenizer(
             texts,
@@ -77,16 +99,17 @@ class PhoBERTClassifier(nn.Module):
         device: Union[str, torch.device] = "cpu",
         max_length: Optional[int] = None,
     ):
-
         if isinstance(texts, str):
             texts = [texts]
 
+        dev = _as_device(device)
+
         self.eval()
-        self.to(device)
+        self.to(dev)
 
         input_ids, attention_mask = self._encode_texts(texts, max_length=max_length)
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
+        input_ids = input_ids.to(dev)
+        attention_mask = attention_mask.to(dev)
 
         logits = self.forward(input_ids, attention_mask)
         probs = torch.softmax(logits, dim=-1)
@@ -100,13 +123,13 @@ class PhoBERTClassifier(nn.Module):
         text: str,
         device: Union[str, torch.device] = "cpu",
         max_length: Optional[int] = None,
-    ) -> NLPFeatures:
-
+        discomfort_level_base: int = 1,
+    ):
         pred_ids, probs_list = self.predict(text, device=device, max_length=max_length)
-        pred_id = int(pred_ids[0])  # 0..3
+        pred_id = int(pred_ids[0])
         probs = probs_list[0]
 
-        # probs -> VN label dict
+
         prob_vn: Dict[str, float] = {}
         for i, p in enumerate(probs):
             en = ID2EN.get(i, str(i))
@@ -117,8 +140,26 @@ class PhoBERTClassifier(nn.Module):
         vn_label = EN2VI.get(en_label, en_label)
         confidence = float(probs[pred_id])
 
+        discomfort_level = int(pred_id + discomfort_level_base)
+
+
+        CoreNLP = _try_core_nlpfeatures()
+        if CoreNLP is not None:
+
+            try:
+                return CoreNLP(
+                    discomfort_level=discomfort_level,
+                    severity_label=vn_label,
+                    confidence=confidence,
+                    probabilities=prob_vn,
+                    original_text=text,
+                )
+            except Exception:
+                pass
+
+
         return NLPFeatures(
-            discomfort_level=pred_id + 1,
+            discomfort_level=discomfort_level,
             severity_label=vn_label,
             confidence=confidence,
             probabilities=prob_vn,
@@ -136,24 +177,54 @@ class PhoBERTClassifier(nn.Module):
         max_length: int = 256,
         strict: bool = True,
         state_dict_key: str = "model_state_dict",
+        tokenizer_name: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> "PhoBERTClassifier":
-
         model = cls(
             model_name=model_name,
             num_labels=num_labels,
             dropout=dropout,
             max_length=max_length,
+            tokenizer_name=tokenizer_name,
+            local_files_only=local_files_only,
         )
 
-        checkpoint = torch.load(model_path, map_location=device)
+        dev = _as_device(device)
+        checkpoint = torch.load(model_path, map_location=dev)
 
         if isinstance(checkpoint, dict) and state_dict_key in checkpoint:
             sd = checkpoint[state_dict_key]
         else:
-            # fallback: treat file as state_dict-only
             sd = checkpoint
 
         model.load_state_dict(sd, strict=strict)
-        model.to(device)
+        model.to(dev)
         model.eval()
         return model
+
+
+_CACHED: dict = {}
+
+
+def get_classifier(
+    model_path: str,
+    *,
+    device: Union[str, torch.device, None] = None,
+    model_name: str = "vinai/phobert-base-v2",
+    tokenizer_name: Optional[str] = None,
+    local_files_only: bool = False,
+) -> PhoBERTClassifier:
+
+    dev = str(_as_device(device))
+    key = (os.path.abspath(model_path), dev, model_name, tokenizer_name, local_files_only)
+    if key in _CACHED:
+        return _CACHED[key]
+    clf = PhoBERTClassifier.load(
+        model_path=model_path,
+        device=dev,
+        model_name=model_name,
+        tokenizer_name=tokenizer_name,
+        local_files_only=local_files_only,
+    )
+    _CACHED[key] = clf
+    return clf
