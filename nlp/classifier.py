@@ -125,6 +125,29 @@ class PhoBERTClassifier(nn.Module):
         max_length: Optional[int] = None,
         discomfort_level_base: int = 1,
     ):
+        # guard empty input to avoid tokenizer edge-cases
+        if text is None or str(text).strip() == "":
+            prob_vn = {"None": 1.0, "Nhẹ": 0.0, "Vừa": 0.0, "Nặng": 0.0}
+            CoreNLP = _try_core_nlpfeatures()
+            if CoreNLP is not None:
+                try:
+                    return CoreNLP(
+                        discomfort_level=0,
+                        severity_label="None",
+                        confidence=1.0,
+                        probabilities=prob_vn,
+                        original_text=str(text) if text is not None else "",
+                    )
+                except Exception:
+                    pass
+            return NLPFeatures(
+                discomfort_level=0,
+                severity_label="None",
+                confidence=1.0,
+                probabilities=prob_vn,
+                original_text=str(text) if text is not None else "",
+            )
+
         pred_ids, probs_list = self.predict(text, device=device, max_length=max_length)
         pred_id = int(pred_ids[0])
         probs = probs_list[0]
@@ -206,6 +229,10 @@ class PhoBERTClassifier(nn.Module):
 _CACHED: dict = {}
 
 
+def clear_classifier_cache() -> None:
+    # manual cache reset (useful in dev)
+    _CACHED.clear()
+
 def get_classifier(
     model_path: str,
     *,
@@ -215,13 +242,14 @@ def get_classifier(
     local_files_only: bool = False,
 ) -> PhoBERTClassifier:
 
-    dev = str(_as_device(device))
-    key = (os.path.abspath(model_path), dev, model_name, tokenizer_name, local_files_only)
+    dev = _as_device(device)
+    # stable cache key across processes
+    key = (os.path.abspath(model_path), str(dev), model_name, tokenizer_name, bool(local_files_only))
     if key in _CACHED:
         return _CACHED[key]
     clf = PhoBERTClassifier.load(
         model_path=model_path,
-        device=dev,
+        device=str(dev),
         model_name=model_name,
         tokenizer_name=tokenizer_name,
         local_files_only=local_files_only,
