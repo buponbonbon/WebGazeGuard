@@ -2,14 +2,14 @@
 
 Shared dataclasses used to pass structured data between modules.
 
-This file is intentionally lightweight (no heavy imports like torch/cv2) so that
+Keep this file lightweight (no heavy imports like torch/cv2) so that
 vision/temporal/web code can import it safely.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import dataclass, field
+from typing import Dict, Optional, List
 
 
 @dataclass(frozen=True)
@@ -79,12 +79,24 @@ class NLPFeatures:
     probabilities: Dict[str, float]
     original_text: str
 
+    # Optional extras for future integration (keep defaults to avoid breaking older code)
+    symptom_keywords: List[str] = field(default_factory=list)  # extracted keywords for explainability
+    model_version: Optional[str] = None  # e.g., "phobert-base-v2" or checkpoint tag
+
 
 @dataclass(frozen=True)
 class RiskOutput:
-    """Module 2 output (placeholder for fusion/risk classifier)."""
+    """Module 2 output for fusion/risk classifier."""
 
     risk_level: str  # e.g., "Low" | "Medium" | "High"
+
+    # Optional numeric score for ranking/thresholding (0..1 or any consistent scale)
+    risk_score: Optional[float] = None
+
+    # Per-signal contributions for explainability (e.g., {"blink":0.3, "nlp":0.4})
+    risk_components: Dict[str, float] = field(default_factory=dict)
+
+    # Optional flags/messages used by UI/coaching
     posture_flag: Optional[str] = None
     explanation: Optional[str] = None
     recommendation: Optional[str] = None
