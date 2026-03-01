@@ -38,6 +38,12 @@ def main():
     ap.add_argument("--z0", type=float, default=60.0, help="Distance calibration Z0 (cm)")
     ap.add_argument("--s0", type=float, default=120.0, help="Distance calibration s0 (px)")
     ap.add_argument("--log", type=str, default="", help="CSV log path (optional). Use 'auto' to auto-name.")
+
+    # Optional gaze CNN integration (enabled if --gaze-ckpt is provided)
+    ap.add_argument("--gaze-ckpt", type=str, default="", help="Path to gaze checkpoint (.pt). Empty disables gaze.")
+    ap.add_argument("--gaze-every", type=int, default=3, help="Run gaze model every N frames (realtime throttle).")
+    ap.add_argument("--gaze-resize", type=str, default="64,64", help="Gaze resize H,W (default 64,64).")
+
     args = ap.parse_args()
 
     cfg = Config(
@@ -49,7 +55,18 @@ def main():
         distance_s0_px=args.s0,
     )
 
-    state = build_pipeline(cfg)
+    gaze_resize_hw = None
+    if args.gaze_resize:
+        h, w = [int(x) for x in args.gaze_resize.split(",")]
+        gaze_resize_hw = (h, w)
+
+    # Pass gaze settings into pipeline builder (pipeline will enable gaze only if ckpt is set)
+    state = build_pipeline(
+        cfg,
+        gaze_ckpt_path=args.gaze_ckpt or None,
+        gaze_every_n_frames=args.gaze_every,
+        gaze_resize_hw=gaze_resize_hw,
+    )
 
     cap = cv2.VideoCapture(args.cam)
     if not cap.isOpened():
@@ -71,39 +88,41 @@ def main():
         if not log_path:
             return  # user didn't request logging
 
+        # NOTE: Keep stable columns; gaze_* are included but may be None.
+        fieldnames = [
+            # frame-level
+            "timestamp_ms",
+            "face_detected",
+            "ear_left",
+            "ear_right",
+            "ear_mean",
+            "blink",
+            "total_blinks",
+            "yaw",
+            "pitch",
+            "roll",
+            "distance_cm",
+            "distance_cat",
+            "gaze_yaw",
+            "gaze_pitch",
+            # window-level (optional)
+            "win_window_start_ms",
+            "win_window_end_ms",
+            "win_window_seconds",
+            "win_ear_mean",
+            "win_ear_std",
+            "win_yaw_mean",
+            "win_yaw_std",
+            "win_pitch_mean",
+            "win_pitch_std",
+            "win_roll_mean",
+            "win_roll_std",
+            "win_blink_rate_bpm",
+            "win_distance_cat_mode",
+        ]
+
         log_fp = open(log_path, "w", newline="", encoding="utf-8")
-        log_writer = csv.DictWriter(
-            log_fp,
-            fieldnames=[
-                # frame-level
-                "timestamp_ms",
-                "face_detected",
-                "ear_left",
-                "ear_right",
-                "ear_mean",
-                "blink",
-                "total_blinks",
-                "yaw",
-                "pitch",
-                "roll",
-                "distance_cm",
-                "distance_cat",
-                # window-level (optional)
-                "win_window_start_ms",
-                "win_window_end_ms",
-                "win_window_seconds",
-                "win_ear_mean",
-                "win_ear_std",
-                "win_yaw_mean",
-                "win_yaw_std",
-                "win_pitch_mean",
-                "win_pitch_std",
-                "win_roll_mean",
-                "win_roll_std",
-                "win_blink_rate_bpm",
-                "win_distance_cat_mode",
-            ],
-        )
+        log_writer = csv.DictWriter(log_fp, fieldnames=fieldnames)
         log_writer.writeheader()
         log_enabled = True
         print(f"[LOG] Writing to: {log_path}")
@@ -138,12 +157,20 @@ def main():
             frames = 0
             t0 = time.perf_counter()
 
+        # Safe getattr for backward compatibility
+        gaze_yaw = getattr(cvf, "gaze_yaw", None)
+        gaze_pitch = getattr(cvf, "gaze_pitch", None)
+
         # Overlay
         y = 24
         put_text(frame, f"FPS: {fps_show:.1f} | window={cfg.window_seconds:.1f}s", y); y += 22
         put_text(frame, f"face={cvf.face_detected}  ear={cvf.ear_mean if cvf.ear_mean is not None else 'NA'}", y); y += 22
         put_text(frame, f"blink={cvf.blink} total={cvf.total_blinks} dist={cvf.distance_cm if cvf.distance_cm is not None else 'NA'} ({cvf.distance_cat})", y); y += 22
         put_text(frame, f"yaw/pitch/roll = {cvf.yaw if cvf.yaw is not None else 'NA'} / {cvf.pitch if cvf.pitch is not None else 'NA'} / {cvf.roll if cvf.roll is not None else 'NA'}", y); y += 22
+
+        # Show gaze if enabled
+        if args.gaze_ckpt:
+            put_text(frame, f"gaze_yaw/pitch = {gaze_yaw if gaze_yaw is not None else 'NA'} / {gaze_pitch if gaze_pitch is not None else 'NA'}", y); y += 22
 
         if win is not None:
             put_text(frame, f"[WIN] blink_rate_bpm={win.blink_rate_bpm if win.blink_rate_bpm is not None else 'NA'}  dist_mode={win.distance_cat_mode}", y); y += 22
@@ -163,6 +190,8 @@ def main():
                 "roll": cvf.roll,
                 "distance_cm": cvf.distance_cm,
                 "distance_cat": cvf.distance_cat,
+                "gaze_yaw": gaze_yaw,
+                "gaze_pitch": gaze_pitch,
             }
             if win is not None:
                 row.update(
@@ -183,7 +212,6 @@ def main():
                     }
                 )
             else:
-                # keep columns present
                 row.update({k: None for k in [
                     "win_window_start_ms","win_window_end_ms","win_window_seconds",
                     "win_ear_mean","win_ear_std","win_yaw_mean","win_yaw_std",

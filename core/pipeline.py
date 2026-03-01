@@ -18,10 +18,15 @@ class PipelineState:
     last_compute_ms: int = 0
 
 
-def build_pipeline(cfg: Config) -> PipelineState:
-    # Initialize vision extractor and temporal aggregator.
+def build_pipeline(
+    cfg: Config,
+    *,
+    gaze_ckpt_path: Optional[str] = None,
+    gaze_every_n_frames: int = 3,
+    gaze_resize_hw: Optional[Tuple[int, int]] = (64, 64),
+) -> PipelineState:
+    """Build the realtime pipeline. Gaze is enabled only if gaze_ckpt_path is provided."""
 
-    # Build distance calibration object
     calib = DistanceCalib(
         Z0_cm=cfg.distance_Z0_cm,
         s0_px=cfg.distance_s0_px,
@@ -30,7 +35,10 @@ def build_pipeline(cfg: Config) -> PipelineState:
     vision = VisionExtractor(
         ear_thresh=cfg.ear_thresh,
         ear_consec_frames=cfg.ear_consec_frames,
-        distance_calib=calib,   # pass calibration to extractor
+        distance_calib=calib,
+        gaze_ckpt_path=gaze_ckpt_path,
+        gaze_every_n_frames=gaze_every_n_frames,
+        gaze_resize_hw=gaze_resize_hw or (64, 64),
     )
 
     agg = WindowAggregator(
