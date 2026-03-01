@@ -21,3 +21,6 @@ logs/
 # Local environment
 .env
 venv/
+
+logs/
+*.csv
