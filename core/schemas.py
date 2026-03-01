@@ -39,6 +39,11 @@ class CVFeatures:
     distance_cm: Optional[float] = None
     distance_cat: Optional[str] = None  # "too_close" | "normal" | "too_far" | None
 
+    # Gaze regression output (yaw/pitch) from gaze CNN (optional)
+    # NOTE: kept optional to avoid breaking CV-only pipeline.
+    gaze_yaw: Optional[float] = None
+    gaze_pitch: Optional[float] = None
+
 
 @dataclass(frozen=True)
 class WindowFeatures:
