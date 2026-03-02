@@ -123,7 +123,7 @@ class PhoBERTClassifier(nn.Module):
         text: str,
         device: Union[str, torch.device] = "cpu",
         max_length: Optional[int] = None,
-        discomfort_level_base: int = 1,
+        discomfort_level_base: int = 0,
     ):
         # guard empty input to avoid tokenizer edge-cases
         if text is None or str(text).strip() == "":
@@ -164,6 +164,8 @@ class PhoBERTClassifier(nn.Module):
         confidence = float(probs[pred_id])
 
         discomfort_level = int(pred_id + discomfort_level_base)
+        # keep within expected range [0, 3]
+        discomfort_level = max(0, min(3, discomfort_level))
 
 
         CoreNLP = _try_core_nlpfeatures()
