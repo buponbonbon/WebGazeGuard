@@ -7,3 +7,5 @@ pandas
 opencv-python
 matplotlib
 mediapipe==0.10.9
+transformers>=4.36.0
+sentencepiece>=0.1.99
