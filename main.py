@@ -1,16 +1,21 @@
+
 from __future__ import annotations
 
 import argparse
-import csv
 import math
-import os
 import time
-from pathlib import Path
+from collections import deque
 
 import cv2
+import numpy as np
 
 from core.config import Config
 from core.pipeline import build_pipeline, step
+from vision.landmarks import FaceLandmarker
+
+# Eye outer corners (MediaPipe Face Mesh)
+L_EYE_OUTER = 33
+R_EYE_OUTER = 263
 
 
 def now_ms() -> int:
@@ -18,192 +23,198 @@ def now_ms() -> int:
 
 
 def put_text(img, text: str, y: int) -> None:
-    cv2.putText(
-        img,
-        text,
-        (12, y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (0, 255, 0),
-        2,
-        cv2.LINE_AA,
-    )
+    cv2.putText(img, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
+
+
+def _to_rad(a: float) -> float:
+    """Auto-detect deg vs rad."""
+    return a if abs(a) <= 3.2 else math.radians(a)
+
+
+def _dict_to_array(xy_dict, n=468) -> np.ndarray:
+    arr = np.zeros((n, 2), dtype=np.float32)
+    for i, (x, y) in xy_dict.items():
+        if 0 <= i < n:
+            arr[i] = (float(x), float(y))
+    return arr
+
+
+def _eye_center(frame, lms_xy: np.ndarray) -> tuple[int, int]:
+    """Eye-center anchor. Fallback to frame center."""
+    h, w = frame.shape[:2]
+    if lms_xy is None or lms_xy.shape[0] <= R_EYE_OUTER:
+        return w // 2, int(h * 0.42)
+
+    pL = lms_xy[L_EYE_OUTER]
+    pR = lms_xy[R_EYE_OUTER]
+    if not np.isfinite(pL).all() or not np.isfinite(pR).all():
+        return w // 2, int(h * 0.42)
+    if (pL[0] == 0 and pL[1] == 0) or (pR[0] == 0 and pR[1] == 0):
+        return w // 2, int(h * 0.42)
+
+    cx = int((pL[0] + pR[0]) * 0.5)
+    cy = int((pL[1] + pR[1]) * 0.5)
+    cx = max(0, min(w - 1, cx))
+    cy = max(0, min(h - 1, cy))
+    return cx, cy
 
 
 def draw_gaze_arrow(
-    frame_bgr,
-    gaze_yaw: float | None,
-    gaze_pitch: float | None,
+    frame,
+    lms_xy: np.ndarray | None,
+    yaw: float | None,
+    pitch: float | None,
     *,
     scale_px: int = 180,
-    origin: tuple[int, int] | None = None,
-    invert_x: bool = False,
-    invert_y: bool = False,
+    mirror: bool = True,
 ) -> None:
-    """Draw a simple 2D gaze arrow from yaw/pitch (radians).
-
-    Note:
-    - We draw from the frame center by default (no extra landmark dependency).
-    - dx uses tan(yaw), dy uses tan(pitch); dy is flipped for image coords.
-    """
-    if gaze_yaw is None or gaze_pitch is None:
+    """Draw arrow from eye center using yaw/pitch."""
+    if yaw is None or pitch is None:
         return
-    if not (math.isfinite(gaze_yaw) and math.isfinite(gaze_pitch)):
+    if not (math.isfinite(yaw) and math.isfinite(pitch)):
         return
 
-    h, w = frame_bgr.shape[:2]
-    ox, oy = origin if origin is not None else (w // 2, h // 2)
+    yaw_r = _to_rad(float(yaw))
+    pitch_r = _to_rad(float(pitch))
 
-    # Convert radians -> 2D direction (screen space)
-    # Use sin() instead of tan() to avoid saturation and improve direction changes.
-    dx = math.sin(float(gaze_yaw))
-    dy = -math.sin(float(gaze_pitch))  # image y grows downward
+    # Mirror webcam preview: flip yaw
+    if mirror:
+        yaw_r = -yaw_r
 
-    if invert_x:
-        dx = -dx
-    if invert_y:
-        dy = -dy
+    h, w = frame.shape[:2]
+    if lms_xy is None:
+        ox, oy = w // 2, int(h * 0.42)
+    else:
+        ox, oy = _eye_center(frame, lms_xy)
+
+    dx = math.tan(yaw_r)
+    dy = -math.tan(pitch_r)
 
     ex = int(ox + dx * scale_px)
     ey = int(oy + dy * scale_px)
 
-    cv2.arrowedLine(frame_bgr, (ox, oy), (ex, ey), (0, 255, 0), 3, tipLength=0.25)
+    cv2.arrowedLine(frame, (ox, oy), (ex, ey), (0, 255, 0), 3, tipLength=0.25)
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cam", type=int, default=0, help="Camera index (default: 0)")
-    ap.add_argument("--fps", type=float, default=30.0, help="Assumed FPS for temporal window")
-    ap.add_argument("--window", type=float, default=2.5, help="Rolling window seconds (methodology: 2–3s)")
-    ap.add_argument("--ear-thresh", type=float, default=0.20, help="EAR threshold for blink")
-    ap.add_argument("--ear-consec", type=int, default=2, help="Consecutive frames under EAR threshold to count blink")
-    ap.add_argument("--z0", type=float, default=60.0, help="Distance calibration Z0 (cm)")
-    ap.add_argument("--s0", type=float, default=120.0, help="Distance calibration s0 (px)")
-    ap.add_argument("--log", type=str, default="", help="CSV log path (optional). Use 'auto' to auto-name.")
+    ap.add_argument("--cam", type=int, default=0)
+    ap.add_argument("--fps", type=float, default=30.0)
+    ap.add_argument("--window", type=float, default=2.5)
 
-    # Optional gaze CNN integration (enabled if --gaze-ckpt is provided)
-    ap.add_argument("--gaze-ckpt", type=str, default="", help="Path to gaze checkpoint (.pt). Empty disables gaze.")
-    ap.add_argument("--gaze-every", type=int, default=3, help="Run gaze model every N frames (realtime throttle).")
-    ap.add_argument("--gaze-resize", type=str, default="64,64", help="Gaze resize H,W (default 64,64).")
+    ap.add_argument("--gaze-ckpt", type=str, default="")
+    ap.add_argument("--draw-gaze", action="store_true")
+    ap.add_argument("--gaze-scale", type=int, default=180)
 
-    # Visualization
-    ap.add_argument("--draw-gaze", action="store_true", help="Draw a 2D gaze arrow overlay (requires gaze enabled).")
-    ap.add_argument("--gaze-arrow-scale", type=int, default=180, help="Arrow length in pixels (default 180).")
-    ap.add_argument("--invert-gaze-x", action="store_true", help="Invert left/right direction of gaze arrow (useful if webcam preview is mirrored).")
-    ap.add_argument("--invert-gaze-y", action="store_true", help="Invert up/down direction of gaze arrow.")
-    ap.add_argument("--mirror-view", action="store_true", help="Mirror the displayed frame horizontally (preview only). If used, consider --invert-gaze-x too.")
+    ap.add_argument("--ema-alpha", type=float, default=0.55)
+    ap.add_argument("--no-smooth", action="store_true")
+
+    ap.add_argument("--mirror", action="store_true", help="Flip yaw for mirrored webcam preview.")
 
     args = ap.parse_args()
 
-    cfg = Config(
-        fps_assumed=args.fps,
-        window_seconds=args.window,
-        ear_thresh=args.ear_thresh,
-        ear_consec_frames=args.ear_consec,
-        distance_Z0_cm=args.z0,
-        distance_s0_px=args.s0,
-    )
-
-    gaze_resize_hw = None
-    if args.gaze_resize:
-        h, w = [int(x) for x in args.gaze_resize.split(",")]
-        gaze_resize_hw = (h, w)
-
-    # Pass gaze settings into pipeline builder (pipeline enables gaze only if ckpt is set)
-    state = build_pipeline(
-        cfg,
-        gaze_ckpt_path=args.gaze_ckpt or None,
-        gaze_every_n_frames=args.gaze_every,
-        gaze_resize_hw=gaze_resize_hw,
-    )
+    cfg = Config(fps_assumed=args.fps, window_seconds=args.window)
+    state = build_pipeline(cfg, gaze_ckpt_path=args.gaze_ckpt or None)
 
     cap = cv2.VideoCapture(args.cam)
     if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera index {args.cam}")
+        raise RuntimeError("Camera not opened")
 
-    # Optional CSV logging
-    log_enabled = False
-    log_fp = None
-    log_writer = None
+    # Landmarker for drawing anchor
+    landmarker = FaceLandmarker()
 
-    def open_logger() -> None:
-        nonlocal log_enabled, log_fp, log_writer
-        if log_enabled:
-            return
-        log_path = args.log
-        if log_path.lower() == "auto":
-            Path("logs").mkdir(parents=True, exist_ok=True)
-            log_path = os.path.join("logs", f"realtime_{int(time.time())}.csv")
-        if not log_path:
-            return  # user didn't request logging
+    # Calibration (~1s)
+    gaze_yaw0 = 0.0
+    gaze_pitch0 = 0.0
+    has_calib = False
+    buf_yaw = deque(maxlen=40)
+    buf_pitch = deque(maxlen=40)
+    collecting = False
+    collect_until = 0
 
-        # Stable columns; gaze_* may be None if gaze disabled.
-        fieldnames = [
-            # frame-level
-            "timestamp_ms",
-            "face_detected",
-            "ear_left",
-            "ear_right",
-            "ear_mean",
-            "blink",
-            "total_blinks",
-            "yaw",
-            "pitch",
-            "roll",
-            "distance_cm",
-            "distance_cat",
-            "gaze_yaw",
-            "gaze_pitch",
-            # window-level
-            "win_window_start_ms",
-            "win_window_end_ms",
-            "win_window_seconds",
-            "win_ear_mean",
-            "win_ear_std",
-            "win_yaw_mean",
-            "win_yaw_std",
-            "win_pitch_mean",
-            "win_pitch_std",
-            "win_roll_mean",
-            "win_roll_std",
-            "win_blink_rate_bpm",
-            "win_distance_cat_mode",
-        ]
-
-        log_fp = open(log_path, "w", newline="", encoding="utf-8")
-        log_writer = csv.DictWriter(log_fp, fieldnames=fieldnames)
-        log_writer.writeheader()
-        log_enabled = True
-        print(f"[LOG] Writing to: {log_path}")
-
-    def close_logger() -> None:
-        nonlocal log_enabled, log_fp, log_writer
-        if log_fp:
-            log_fp.close()
-        log_fp = None
-        log_writer = None
-        log_enabled = False
-        print("[LOG] Off")
+    # Smoothing
+    ema_y = None
+    ema_p = None
+    alpha = float(args.ema_alpha)
 
     t0 = time.perf_counter()
     frames = 0
     fps_show = 0.0
 
-    # Gaze arrow calibration (zero-offset) for webcam domain shift
-    gaze_yaw0 = 0.0
-    gaze_pitch0 = 0.0
-    has_calib = False
+    print("Controls: Q quit | C calibrate (~1s looking straight) | R reset calibration")
 
-    print("Controls: [Q] quit | [S] toggle CSV log (requires --log path or --log auto) | [C] calibrate gaze zero")
     while True:
         ok, frame = cap.read()
         if not ok:
             break
 
         ts = now_ms()
-        cvf, win = step(state, frame, timestamp_ms=ts)
+        cvf, _win = step(state, frame, timestamp_ms=ts)
 
-        # FPS estimate
+        # Landmarks only for arrow anchor
+        lm = landmarker.detect_xy(frame)
+        lms_xy = _dict_to_array(lm.xy) if lm is not None else None
+
+        gaze_yaw = getattr(cvf, "gaze_yaw", None)
+        gaze_pitch = getattr(cvf, "gaze_pitch", None)
+
+        # Collect calibration
+        if collecting and gaze_yaw is not None and gaze_pitch is not None:
+            buf_yaw.append(float(gaze_yaw))
+            buf_pitch.append(float(gaze_pitch))
+            if ts >= collect_until:
+                if len(buf_yaw) >= 8:
+                    gaze_yaw0 = sum(buf_yaw) / len(buf_yaw)
+                    gaze_pitch0 = sum(buf_pitch) / len(buf_pitch)
+                    has_calib = True
+                    ema_y = None
+                    ema_p = None
+                    print(f"[GAZE] Calibrated yaw0={gaze_yaw0:.4f} pitch0={gaze_pitch0:.4f} (n={len(buf_yaw)})")
+                else:
+                    print("[GAZE] Calib failed: not enough samples")
+                collecting = False
+
+        # Relative gaze
+        yaw_rel = None
+        pitch_rel = None
+        if gaze_yaw is not None and gaze_pitch is not None:
+            if has_calib:
+                yaw_rel = float(gaze_yaw) - float(gaze_yaw0)
+                pitch_rel = float(gaze_pitch) - float(gaze_pitch0)
+            else:
+                yaw_rel = float(gaze_yaw)
+                pitch_rel = float(gaze_pitch)
+
+        yaw_draw = yaw_rel
+        pitch_draw = pitch_rel
+
+        if not args.no_smooth and yaw_rel is not None and pitch_rel is not None:
+            if ema_y is None:
+                ema_y = float(yaw_rel)
+                ema_p = float(pitch_rel)
+            else:
+                ema_y = (1 - alpha) * float(ema_y) + alpha * float(yaw_rel)
+                ema_p = (1 - alpha) * float(ema_p) + alpha * float(pitch_rel)
+                # auto recenter when near center
+                if abs(yaw_rel) < 0.04:
+                    ema_y *= 0.85
+
+                if abs(pitch_rel) < 0.04:
+                    ema_p *= 0.85
+            yaw_draw = float(ema_y)
+            pitch_draw = float(ema_p)
+
+        if args.draw_gaze:
+            draw_gaze_arrow(
+                frame,
+                lms_xy,
+                yaw_draw,
+                pitch_draw,
+                scale_px=int(args.gaze_scale),
+                mirror=bool(args.mirror),
+            )
+
+        # FPS
         frames += 1
         dt = time.perf_counter() - t0
         if dt >= 1.0:
@@ -211,115 +222,33 @@ def main():
             frames = 0
             t0 = time.perf_counter()
 
-        # Safe getattr (keeps compatibility if schema changes)
-        gaze_yaw = getattr(cvf, "gaze_yaw", None)
-        gaze_pitch = getattr(cvf, "gaze_pitch", None)
-
-        # Optional calibration: subtract a captured baseline so arrow shows relative change
-        gaze_yaw_rel = None
-        gaze_pitch_rel = None
-        if gaze_yaw is not None and gaze_pitch is not None:
-            if has_calib:
-                gaze_yaw_rel = float(gaze_yaw) - float(gaze_yaw0)
-                gaze_pitch_rel = float(gaze_pitch) - float(gaze_pitch0)
-            else:
-                gaze_yaw_rel = float(gaze_yaw)
-                gaze_pitch_rel = float(gaze_pitch)
-
-        # Draw gaze vector (optional)
-        if args.draw_gaze and args.gaze_ckpt:
-            draw_gaze_arrow(
-                frame,
-                gaze_yaw_rel,
-                gaze_pitch_rel,
-                scale_px=args.gaze_arrow_scale,
-                invert_x=bool(args.invert_gaze_x),
-                invert_y=bool(args.invert_gaze_y),
-            )
-
-        # Overlay text
         y = 24
-        put_text(frame, f"FPS: {fps_show:.1f} | window={cfg.window_seconds:.1f}s", y); y += 22
-        put_text(frame, f"face={cvf.face_detected}  ear={cvf.ear_mean if cvf.ear_mean is not None else 'NA'}", y); y += 22
-        put_text(frame, f"blink={cvf.blink} total={cvf.total_blinks} dist={cvf.distance_cm if cvf.distance_cm is not None else 'NA'} ({cvf.distance_cat})", y); y += 22
-        put_text(frame, f"yaw/pitch/roll = {cvf.yaw if cvf.yaw is not None else 'NA'} / {cvf.pitch if cvf.pitch is not None else 'NA'} / {cvf.roll if cvf.roll is not None else 'NA'}", y); y += 22
+        put_text(frame, f"FPS: {fps_show:.1f} | calib={int(has_calib)} smooth={int(not args.no_smooth)} alpha={alpha:.2f}", y); y += 22
+        put_text(frame, f"gaze_raw(y/p)={gaze_yaw}/{gaze_pitch}", y); y += 22
+        put_text(frame, f"gaze_rel(y/p)={yaw_rel}/{pitch_rel}", y); y += 22
+        put_text(frame, f"gaze_draw(y/p)={yaw_draw}/{pitch_draw}", y); y += 22
+        put_text(frame, f"head_yaw_deg={cvf.yaw}", y); y += 22
 
-        if args.gaze_ckpt:
-            put_text(frame, f"gaze_raw(y/p) = {gaze_yaw if gaze_yaw is not None else 'NA'} / {gaze_pitch if gaze_pitch is not None else 'NA'}", y); y += 22
-            put_text(frame, f"gaze_rel(y/p) = {gaze_yaw_rel if gaze_yaw_rel is not None else 'NA'} / {gaze_pitch_rel if gaze_pitch_rel is not None else 'NA'}", y); y += 22
-            put_text(frame, f"flags: mirror={int(bool(args.mirror_view))} invX={int(bool(args.invert_gaze_x))} invY={int(bool(args.invert_gaze_y))} calib={int(has_calib)}", y); y += 22
-
-        if win is not None:
-            put_text(frame, f"[WIN] blink_rate_bpm={win.blink_rate_bpm if win.blink_rate_bpm is not None else 'NA'}  dist_mode={win.distance_cat_mode}", y); y += 22
-
-        # Logging
-        if log_enabled and log_writer is not None:
-            row = {
-                "timestamp_ms": cvf.timestamp_ms,
-                "face_detected": cvf.face_detected,
-                "ear_left": cvf.ear_left,
-                "ear_right": cvf.ear_right,
-                "ear_mean": cvf.ear_mean,
-                "blink": cvf.blink,
-                "total_blinks": cvf.total_blinks,
-                "yaw": cvf.yaw,
-                "pitch": cvf.pitch,
-                "roll": cvf.roll,
-                "distance_cm": cvf.distance_cm,
-                "distance_cat": cvf.distance_cat,
-                "gaze_yaw": gaze_yaw,
-                "gaze_pitch": gaze_pitch,
-            }
-            if win is not None:
-                row.update(
-                    {
-                        "win_window_start_ms": win.window_start_ms,
-                        "win_window_end_ms": win.window_end_ms,
-                        "win_window_seconds": win.window_seconds,
-                        "win_ear_mean": win.ear_mean,
-                        "win_ear_std": win.ear_std,
-                        "win_yaw_mean": win.yaw_mean,
-                        "win_yaw_std": win.yaw_std,
-                        "win_pitch_mean": win.pitch_mean,
-                        "win_pitch_std": win.pitch_std,
-                        "win_roll_mean": win.roll_mean,
-                        "win_roll_std": win.roll_std,
-                        "win_blink_rate_bpm": win.blink_rate_bpm,
-                        "win_distance_cat_mode": win.distance_cat_mode,
-                    }
-                )
-            else:
-                row.update({k: None for k in [
-                    "win_window_start_ms","win_window_end_ms","win_window_seconds",
-                    "win_ear_mean","win_ear_std","win_yaw_mean","win_yaw_std",
-                    "win_pitch_mean","win_pitch_std","win_roll_mean","win_roll_std",
-                    "win_blink_rate_bpm","win_distance_cat_mode"
-                ]})
-            log_writer.writerow(row)
-
-        if args.mirror_view:
-            frame_show = cv2.flip(frame, 1)
-        else:
-            frame_show = frame
-
-        cv2.imshow("WebGazeGuard - main", frame_show)
+        cv2.imshow("WebGazeGuard - main", frame)
         key = cv2.waitKey(1) & 0xFF
+
         if key in (ord("q"), ord("Q")):
             break
         if key in (ord("c"), ord("C")):
-            # Capture current gaze as zero reference (use while looking straight)
-            if gaze_yaw is not None and gaze_pitch is not None:
-                gaze_yaw0 = float(gaze_yaw)
-                gaze_pitch0 = float(gaze_pitch)
-                has_calib = True
-                print(f"[GAZE] Calibrated: yaw0={gaze_yaw0:.4f}, pitch0={gaze_pitch0:.4f}")
-        if key in (ord("s"), ord("S")):
-            if not log_enabled:
-                open_logger()
-            else:
-                close_logger()
+            buf_yaw.clear()
+            buf_pitch.clear()
+            collecting = True
+            collect_until = ts + 1100
+            print("[GAZE] Collecting calibration samples (~1s)...")
+        if key in (ord("r"), ord("R")):
+            has_calib = False
+            collecting = False
+            ema_y = None
+            ema_p = None
+            buf_yaw.clear()
+            buf_pitch.clear()
+            print("[GAZE] Calibration reset")
 
-    close_logger()
     cap.release()
     cv2.destroyAllWindows()
 
