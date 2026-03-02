@@ -26,3 +26,7 @@ analysis_output/
 *.png
 *.jpg
 eda/
+# Add env files
+.env
+.env.local
+.env.*
