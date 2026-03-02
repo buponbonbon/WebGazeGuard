@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="vi" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vision Guard — WebGazeGuard</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@100..900&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+    <script>
+      // Tailwind config inline to keep single-file deploy
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "primary": "#13c8ec",
+              "background-dark": "#0a1214",
+              "card-dark": "#162529",
+            },
+            fontFamily: { "display": ["Lexend", "sans-serif"] },
+            borderRadius: { "2xl": "1rem" }
+          }
+        }
+      }
+    </script>
+    <style type="text/tailwindcss">
+      body { min-height: 100dvh; }
+      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: #13c8ec33; border-radius: 10px; }
+    </style>
+  </head>
+  <body class="bg-background-dark font-display text-white overflow-x-hidden">
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
