@@ -28,5 +28,7 @@ analysis_output/
 eda/
 # Add env files
 .env
-.env.local
 .env.*
+!.env.example
+# 
+web/back_end/*.db
