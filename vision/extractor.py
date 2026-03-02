@@ -1,197 +1,225 @@
+
+"""
+vision/extractor.py (eye-ROI tuned)
+- Keeps VisionExtractor for pipeline import.
+- Uses true eye ROI (tight) to reduce head-bias.
+- Short English comments.
+"""
+
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 
 from core.schemas import CVFeatures
-from vision.landmarks import FaceLandmarker, FaceLandmarks
+from vision.landmarks import FaceLandmarker
 from vision.ear import compute_ear_both_eyes
 from vision.blink import BlinkDetector
 from vision.head_pose import estimate_head_pose_pnp
 
-# MediaPipe Face Mesh indices (stable across versions)
-LEFT_OUTER_EYE = 33
-RIGHT_OUTER_EYE = 263
-
-# Small sets around the eyelids/corners for a robust eye ROI box
+# Face Mesh indices
+L_EYE_OUTER = 33
+R_EYE_OUTER = 263
 LEFT_EYE_IDXS = [33, 133, 160, 159, 158, 157, 173]
 RIGHT_EYE_IDXS = [362, 263, 387, 386, 385, 384, 398]
 
 
-@dataclass(frozen=True)
-class DistanceCalib:
-    # Calibration: Z = Z0 * (s0 / s)
-    Z0_cm: float
-    s0_px: float
-
-
-def _xy_dict_to_array(xy: dict[int, Tuple[float, float]], n_points: int = 468) -> np.ndarray:
-    """Convert {idx:(x,y)} dict to (n_points,2) array."""
-    arr = np.zeros((n_points, 2), dtype=np.float32)
-    for i, (x, y) in xy.items():
-        if 0 <= i < n_points:
+def _dict_to_array(xy_dict: Dict[int, Tuple[float, float]], n: int = 468) -> np.ndarray:
+    """Convert {idx:(x,y)} -> (n,2) array; missing points become (0,0)."""
+    arr = np.zeros((n, 2), dtype=np.float32)
+    for i, (x, y) in xy_dict.items():
+        if 0 <= i < n:
             arr[i, 0] = float(x)
             arr[i, 1] = float(y)
     return arr
 
 
+def _valid_pt(p: np.ndarray) -> bool:
+    return bool(np.isfinite(p).all() and not (p[0] == 0.0 and p[1] == 0.0))
+
+
+def _clip(v: float, lo: int, hi: int) -> int:
+    return int(max(lo, min(hi, int(round(v)))))
+
+
 def _interocular_px(lms_xy: np.ndarray) -> float:
-    """Inter-ocular pixel distance (33 ↔ 263)."""
-    if lms_xy is None or lms_xy.shape[0] <= RIGHT_OUTER_EYE:
+    """s = ||p33 - p263|| in pixels."""
+    if lms_xy is None or lms_xy.shape[0] <= R_EYE_OUTER:
         return float("nan")
-    return float(np.linalg.norm(lms_xy[LEFT_OUTER_EYE] - lms_xy[RIGHT_OUTER_EYE]))
+    pL = lms_xy[L_EYE_OUTER]
+    pR = lms_xy[R_EYE_OUTER]
+    if not (_valid_pt(pL) and _valid_pt(pR)):
+        return float("nan")
+    return float(np.linalg.norm(pL - pR))
 
 
-def _estimate_distance_cm(lms_xy: np.ndarray, calib: DistanceCalib) -> Optional[float]:
-    """Estimate viewing distance (cm) using a simple 1-point calibration."""
-    s = _interocular_px(lms_xy)
-    if not np.isfinite(s) or s <= 0:
-        return None
-    if calib.Z0_cm <= 0 or calib.s0_px <= 0:
-        return None
-    return float(calib.Z0_cm * (calib.s0_px / s))
-
-
-def _categorize_distance(distance_cm: Optional[float], near_cm: float, far_cm: float) -> Optional[str]:
-    """Map a distance to {too_close, normal, too_far}."""
-    if distance_cm is None or not np.isfinite(distance_cm):
-        return None
-    if distance_cm < near_cm:
-        return "too_close"
-    if distance_cm > far_cm:
-        return "too_far"
-    return "normal"
-
-
-def _clip_int(v: float, lo: int, hi: int) -> int:
-    return int(max(lo, min(hi, int(v))))
-
-
-def _crop_eye_roi(frame_bgr: np.ndarray, lms_xy: np.ndarray, margin: float = 0.25) -> Optional[np.ndarray]:
-    """Crop an eye ROI (both eyes) from the frame using landmark bbox."""
-    if lms_xy is None or lms_xy.shape[0] < 399:
-        return None
-
+def _crop_bbox_from_idxs(
+    frame_bgr: np.ndarray,
+    lms_xy: np.ndarray,
+    idxs: List[int],
+    *,
+    margin: float,
+    min_w: int,
+    min_h: int,
+) -> Optional[np.ndarray]:
+    """Crop ROI by bbox of selected landmarks (tight + padded)."""
     H, W = frame_bgr.shape[:2]
+    pts = []
+    for i in idxs:
+        if 0 <= i < lms_xy.shape[0]:
+            p = lms_xy[i]
+            if _valid_pt(p):
+                pts.append(p)
+    if not pts:
+        return None
 
-    idxs = LEFT_EYE_IDXS + RIGHT_EYE_IDXS
-    pts = lms_xy[idxs]  # (N,2) absolute pixel coords
-
+    pts = np.stack(pts, axis=0)
     x0, y0 = float(np.min(pts[:, 0])), float(np.min(pts[:, 1]))
     x1, y1 = float(np.max(pts[:, 0])), float(np.max(pts[:, 1]))
 
     bw = max(1.0, x1 - x0)
     bh = max(1.0, y1 - y0)
 
-    # Expand bbox a bit to include eyelids/eye corners
     x0 -= margin * bw
     x1 += margin * bw
     y0 -= margin * bh
     y1 += margin * bh
 
-    x0i = _clip_int(x0, 0, W - 1)
-    x1i = _clip_int(x1, 0, W - 1)
-    y0i = _clip_int(y0, 0, H - 1)
-    y1i = _clip_int(y1, 0, H - 1)
+    # Enforce minimum size
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    bw2 = max(float(min_w), x1 - x0)
+    bh2 = max(float(min_h), y1 - y0)
+    x0 = cx - bw2 / 2.0
+    x1 = cx + bw2 / 2.0
+    y0 = cy - bh2 / 2.0
+    y1 = cy + bh2 / 2.0
+
+    x0i = _clip(x0, 0, W - 1)
+    x1i = _clip(x1, 0, W - 1)
+    y0i = _clip(y0, 0, H - 1)
+    y1i = _clip(y1, 0, H - 1)
 
     if x1i <= x0i or y1i <= y0i:
         return None
 
-    return frame_bgr[y0i:y1i, x0i:x1i].copy()
+    roi = frame_bgr[y0i:y1i, x0i:x1i]
+    if roi.size == 0:
+        return None
+    print("ROI shape:", roi.shape)
+    return roi.copy()
 
 
 class VisionExtractor:
-    """Frame-level CV feature extractor (landmarks → EAR/blink/pose/distance [+ optional gaze])."""
+    """
+    Frame-level CV extractor used by core.pipeline:
+      landmarks -> EAR/blink -> head pose
+      + optional gaze CNN yaw/pitch (tight eye ROI)
+    """
 
     def __init__(
         self,
         *,
-        landmark_model_path: str = "face_landmarker.task",
         ear_thresh: float = 0.20,
         ear_consec_frames: int = 2,
-        focal_scale: float = 1.0,
-        distance_calib: Optional[DistanceCalib] = None,
-        distance_near_cm: float = 40.0,
-        distance_far_cm: float = 75.0,
-        # Optional gaze CNN (if provided, we infer yaw/pitch from eye ROI)
+        distance_calib=None,              # kept for compatibility
         gaze_ckpt_path: Optional[str] = None,
-        gaze_model_name: str = "custom",
-        gaze_input_channels: int = 1,
-        gaze_output_dim: int = 2,
+        gaze_every_n_frames: int = 3,
         gaze_resize_hw: Tuple[int, int] = (64, 64),
-        gaze_every_n_frames: int = 3,  # run gaze model every N frames to keep FPS
     ):
-        self.landmarker = FaceLandmarker(model_path=landmark_model_path)
-        self.blink = BlinkDetector(ear_thresh=ear_thresh, consec_frames=ear_consec_frames)
-        self.focal_scale = float(focal_scale)
+        self.landmarker = FaceLandmarker()
+        self.blink = BlinkDetector(ear_thresh, ear_consec_frames)
 
-        self.distance_calib = distance_calib
-        self.distance_near_cm = float(distance_near_cm)
-        self.distance_far_cm = float(distance_far_cm)
+        self.gaze_ckpt_path = gaze_ckpt_path
+        self.gaze_every_n = max(1, int(gaze_every_n_frames))
+        self.gaze_resize_hw = tuple(gaze_resize_hw)
 
-        # Pose history for blink freeze during fast head turns
-        self._prev_pose_ts_ms: Optional[int] = None
-        self._prev_yaw: Optional[float] = None
-        self._prev_pitch: Optional[float] = None
-        self._freeze_blink_until_ms: Optional[int] = None
-
-        # Gaze inference (optional)
         self._gaze_model = None
-        self._gaze_cfg = dict(
-            input_channels=int(gaze_input_channels),
-            output_dim=int(gaze_output_dim),
-            model_name=str(gaze_model_name),
-            resize_hw=tuple(gaze_resize_hw),
-        )
-        self._gaze_every_n = max(1, int(gaze_every_n_frames))
-        self._frame_counter = 0
+        self._gaze_i = 0
         self._last_gaze: Optional[np.ndarray] = None
 
-        if gaze_ckpt_path:
-            # Import here to avoid importing torch in pure CV mode
-            from ml_cnn.infer import load_model  # your NEW infer.py
+    def _ensure_gaze_model(self):
+        if self.gaze_ckpt_path is None:
+            return None
+        if self._gaze_model is not None:
+            return self._gaze_model
+        from ml_cnn.infer import load_model
+        self._gaze_model = load_model(self.gaze_ckpt_path)
+        return self._gaze_model
 
-            self._gaze_model = load_model(
-                gaze_ckpt_path,
-                input_channels=self._gaze_cfg["input_channels"],
-                output_dim=self._gaze_cfg["output_dim"],
-                model_name=self._gaze_cfg["model_name"],
-                pretrained=False,
-            )
-
-    def _maybe_predict_gaze(self, frame_bgr: np.ndarray, lms_xy: np.ndarray) -> Optional[np.ndarray]:
-        """Return last gaze prediction (yaw,pitch). Runs model every N frames."""
-        if self._gaze_model is None:
+    def _predict_gaze(self, roi_bgr: np.ndarray) -> Optional[np.ndarray]:
+        """Predict yaw/pitch from ROI."""
+        model = self._ensure_gaze_model()
+        if model is None:
             return None
 
-        self._frame_counter += 1
-        if (self._frame_counter % self._gaze_every_n) != 0 and self._last_gaze is not None:
-            return self._last_gaze
+        # Preferred helper
+        try:
+            from ml_cnn.infer import predict_array  # type: ignore
+            pred = predict_array(model, roi_bgr, resize_hw=self.gaze_resize_hw)
+            arr = np.asarray(pred, dtype=np.float32).reshape(-1)
+            if arr.size >= 2 and np.isfinite(arr[:2]).all():
+                return arr[:2]
+        except Exception:
+            pass
 
-        roi = _crop_eye_roi(frame_bgr, lms_xy)
-        if roi is None:
-            return self._last_gaze
+        # Fallback minimal
+        try:
+            import cv2
+            import torch
 
-        from ml_cnn.infer import predict_array  # your NEW infer.py
+            H, W = self.gaze_resize_hw
+            x = cv2.resize(roi_bgr, (W, H), interpolation=cv2.INTER_AREA)
+            x = cv2.cvtColor(x, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+            x = x[None, None, :, :]
 
-        gaze = predict_array(
-            self._gaze_model,
-            roi,
-            input_channels=self._gaze_cfg["input_channels"],
-            resize_hw=self._gaze_cfg["resize_hw"],
+            device = next(model.parameters()).device
+            t = torch.from_numpy(x).to(device)
+            with torch.no_grad():
+                out = model(t).detach().cpu().numpy()[0]
+            out = np.asarray(out, dtype=np.float32).reshape(-1)
+            if out.size >= 2 and np.isfinite(out[:2]).all():
+                return out[:2]
+        except Exception:
+            return None
+
+        return None
+
+    def _crop_eye_roi(self, frame_bgr: np.ndarray, lms_xy: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Tight eye ROI:
+        - bbox on eyelid landmarks (not midpoint).
+        - bounded size to reduce head bias.
+        """
+        if lms_xy is None or lms_xy.shape[0] < 400:
+            return None
+
+        s = _interocular_px(lms_xy)
+        if not np.isfinite(s) or s <= 1:
+            return None
+
+        min_w = int(max(40, min(80, s * 0.35)))
+        min_h = int(max(24, min(55, s * 0.25)))
+
+        roi = _crop_bbox_from_idxs(frame_bgr, lms_xy, LEFT_EYE_IDXS, margin=0.55, min_w=min_w, min_h=min_h)
+        if roi is not None:
+            return roi
+        roi = _crop_bbox_from_idxs(frame_bgr, lms_xy, RIGHT_EYE_IDXS, margin=0.55, min_w=min_w, min_h=min_h)
+        if roi is not None:
+            return roi
+        return _crop_bbox_from_idxs(
+            frame_bgr,
+            lms_xy,
+            LEFT_EYE_IDXS + RIGHT_EYE_IDXS,
+            margin=0.40,
+            min_w=int(min_w * 1.4),
+            min_h=int(min_h * 1.2),
         )
-        self._last_gaze = np.asarray(gaze, dtype=np.float32).reshape(-1)
-        return self._last_gaze
 
-    def extract(self, frame_bgr: np.ndarray, timestamp_ms: Optional[int] = None) -> CVFeatures:
-        """Extract CVFeatures from a single BGR frame."""
-        if timestamp_ms is None:
-            timestamp_ms = int(time.time() * 1000)
+    def extract(self, frame_bgr, timestamp_ms: int) -> CVFeatures:
+        lm = self.landmarker.detect_xy(frame_bgr)
 
-        lm: Optional[FaceLandmarks] = self.landmarker.detect_xy(frame_bgr)
         if lm is None:
             return CVFeatures(
                 timestamp_ms=timestamp_ms,
@@ -200,79 +228,47 @@ class VisionExtractor:
                 total_blinks=self.blink.total_blinks,
             )
 
-        lms_xy = _xy_dict_to_array(lm.xy)
+        lms_xy = _dict_to_array(lm.xy)
 
-        # EAR (left/right/mean)
         ear_l, ear_r, ear_m = compute_ear_both_eyes(lms_xy)
 
-        # Head pose (yaw/pitch/roll)
-        pose = estimate_head_pose_pnp(lms_xy, frame_bgr.shape, focal_scale=self.focal_scale)
+        pose = estimate_head_pose_pnp(lms_xy, frame_bgr.shape)
         yaw = pose["yaw"] if pose else None
         pitch = pose["pitch"] if pose else None
         roll = pose["roll"] if pose else None
 
-        # Blink (freeze briefly during fast head motion)
-        blink_flag = False
-        freeze_active = self._freeze_blink_until_ms is not None and timestamp_ms < self._freeze_blink_until_ms
+        blink_flag = self.blink.update(float(ear_m))
 
-        if not freeze_active and yaw is not None and pitch is not None:
-            if self._prev_pose_ts_ms is not None:
-                dt = (timestamp_ms - self._prev_pose_ts_ms) / 1000.0
-                if dt > 0 and self._prev_yaw is not None and self._prev_pitch is not None:
-                    yaw_vel = abs(yaw - self._prev_yaw) / dt
-                    pitch_vel = abs(pitch - self._prev_pitch) / dt
-
-                    if yaw_vel > 150 or pitch_vel > 150:
-                        self._freeze_blink_until_ms = timestamp_ms + 250
-                        self.blink.update(1.0)  # reset detector state
-                    else:
-                        blink_flag = self.blink.update(ear_m)
-                else:
-                    blink_flag = self.blink.update(ear_m)
-            else:
-                blink_flag = self.blink.update(ear_m)
-        else:
-            self.blink.update(1.0)
-
-        self._prev_pose_ts_ms = timestamp_ms
-        self._prev_yaw = yaw
-        self._prev_pitch = pitch
-
-        # Distance (optional calibration)
-        distance_cm: Optional[float] = None
-        distance_cat: Optional[str] = None
-        if self.distance_calib is not None:
-            distance_cm = _estimate_distance_cm(lms_xy, self.distance_calib)
-            distance_cat = _categorize_distance(distance_cm, self.distance_near_cm, self.distance_far_cm)
-
-        # Optional gaze prediction (yaw,pitch from eye ROI)
-        gaze = self._maybe_predict_gaze(frame_bgr, lms_xy)
-
-        # Build payload; keep backward-compat with older CVFeatures schemas.
         payload: Dict[str, Any] = dict(
-            timestamp_ms=timestamp_ms,
+            timestamp_ms=int(timestamp_ms),
             face_detected=True,
-            ear_left=ear_l,
-            ear_right=ear_r,
-            ear_mean=ear_m,
-            blink=blink_flag,
-            total_blinks=self.blink.total_blinks,
+            ear_left=float(ear_l),
+            ear_right=float(ear_r),
+            ear_mean=float(ear_m),
+            blink=bool(blink_flag),
+            total_blinks=int(self.blink.total_blinks),
             yaw=yaw,
             pitch=pitch,
             roll=roll,
-            distance_cm=distance_cm,
-            distance_cat=distance_cat,
         )
 
-        # Only include gaze fields if CVFeatures schema supports them.
-        if gaze is not None and gaze.size >= 2:
-            payload["gaze_yaw"] = float(gaze[0])
-            payload["gaze_pitch"] = float(gaze[1])
+        if self.gaze_ckpt_path is not None:
+            self._gaze_i += 1
+            if (self._gaze_i % self.gaze_every_n) != 0 and self._last_gaze is not None:
+                gaze = self._last_gaze
+            else:
+                roi = self._crop_eye_roi(frame_bgr, lms_xy)
+                gaze = self._predict_gaze(roi) if roi is not None else self._last_gaze
+                if gaze is not None:
+                    self._last_gaze = gaze
+
+            if gaze is not None:
+                payload["gaze_yaw"] = float(gaze[0])
+                payload["gaze_pitch"] = float(gaze[1])
 
         try:
             return CVFeatures(**payload)
         except TypeError:
-            # Schema doesn't have gaze_* fields (older core.schemas). Remove and retry.
             payload.pop("gaze_yaw", None)
             payload.pop("gaze_pitch", None)
             return CVFeatures(**payload)
