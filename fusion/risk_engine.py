@@ -1,12 +1,42 @@
 from __future__ import annotations
-
+from core.schemas import WindowFeatures, NLPFeatures, RiskOutput
 from dataclasses import asdict
 from typing import Optional, Dict, Tuple, List
+import re
 
-from core.schemas import WindowFeatures, NLPFeatures, RiskOutput
+from unicodedata import normalize as _ud_normalize
 
 
 # scoring helpers
+
+# --- NLP guardrail helpers (lightweight, no extra deps) ---
+_SEVERE_KWS = [
+    "đau rát", "đau mắt", "mờ", "mờ mắt", "nhức đầu", "đỏ", "mắt đỏ",
+    "chảy nước mắt", "cộm", "xốn", "rát", "căng đau",
+]
+
+
+def _strip_accents(s: str) -> str:
+    s = _ud_normalize('NFKD', s)
+    return ''.join(ch for ch in s if not getattr(ch, 'combining', lambda: False)())
+
+
+def _norm_text(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _has_severe_keyword(text: str) -> bool:
+    t = _norm_text(text)
+    t2 = _strip_accents(t)
+    for kw in _SEVERE_KWS:
+        k = _norm_text(kw)
+        if k in t or _strip_accents(k) in t2:
+            return True
+    return False
+
+
 
 def _clip01(x: float) -> float:
     if x < 0.0:
@@ -75,6 +105,12 @@ def _nlp_risk(nlp: Optional[NLPFeatures]) -> Tuple[float, Optional[str], float]:
 
     lvl = int(getattr(nlp, "discomfort_level", 0) or 0)
     conf = float(getattr(nlp, "confidence", 0.0) or 0.0)
+    text = str(getattr(nlp, "original_text", "") or "")
+
+    # --- Guardrail: prevent underestimation for severe symptom keywords ---
+    # This is intentionally lightweight to keep realtime stable.
+    if lvl < 2 and text and _has_severe_keyword(text):
+        lvl = 2
 
     # normalize levels:
 
