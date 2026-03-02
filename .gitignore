@@ -21,6 +21,8 @@ logs/
 # Local environment
 .env
 venv/
-
-logs/
-*.csv
+# Output images from data analysis
+analysis_output/
+*.png
+*.jpg
+eda/
