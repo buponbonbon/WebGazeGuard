@@ -63,11 +63,20 @@ class PhoBERTClassifier(nn.Module):
         self.local_files_only = local_files_only
 
 
-        self.encoder = AutoModel.from_pretrained(model_name, local_files_only=local_files_only)
-        hidden_size = self.encoder.config.hidden_size
+        # Use attribute name `phobert` to match keys in saved checkpoints
+        self.phobert = AutoModel.from_pretrained(model_name, local_files_only=local_files_only)
+        hidden_size = self.phobert.config.hidden_size
+        # MLP head compatible with eyebot checkpoint (768→384→128→4 with BatchNorm)
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size, num_labels),
+            nn.Linear(hidden_size, 384),   # classifier.0
+            nn.BatchNorm1d(384),           # classifier.1
+            nn.GELU(),                     # classifier.2
+            nn.Dropout(dropout),           # classifier.3
+            nn.Linear(384, 128),           # classifier.4
+            nn.BatchNorm1d(128),           # classifier.5
+            nn.GELU(),                     # classifier.6
+            nn.Dropout(dropout),           # classifier.7
+            nn.Linear(128, num_labels)     # classifier.8
         )
 
 
@@ -75,7 +84,7 @@ class PhoBERTClassifier(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(tok_name, local_files_only=local_files_only)
 
     def forward(self, input_ids, attention_mask):
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        outputs = self.phobert(input_ids=input_ids, attention_mask=attention_mask)
         cls_emb = outputs.last_hidden_state[:, 0, :]
         return self.classifier(cls_emb)
 
