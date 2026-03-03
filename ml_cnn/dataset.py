@@ -5,6 +5,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import h5py
 import numpy as np
+import zlib
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
@@ -18,6 +19,12 @@ class H5Sample:
     subject: str
     session: str
     idx: int  # frame index inside image[session]
+
+def _stable_session_seed(base_seed: int, subject: str, session: str) -> int:
+    """Stable per-session seed (independent of enumeration order)."""
+    key = f"{subject}/{session}".encode("utf-8")
+    return (base_seed + zlib.adler32(key)) % (2**32)
+
 
 
 def _list_subjects(h5_path: str, subject_prefix: str = "p") -> List[str]:
@@ -45,8 +52,16 @@ def build_sample_index(
     subject_list: Sequence[str],
     k_per_session: int = 1,
     seed: int = 42,
+    split: str = "train",  # train/val/test
 ) -> List[H5Sample]:
     # Scan metadata only; do not load images into RAM.
+    # IMPORTANT:
+    # - train: randomized sampling (reproducible per run via `seed`)
+    # - val/test: deterministic sampling PER SESSION to prevent epoch-to-epoch validation jitter
+    split = split.lower().strip()
+    if split not in {"train", "val", "test"}:
+        raise ValueError(f"Invalid split={split!r}, expected 'train'/'val'/'test'.")
+
     rng = np.random.default_rng(seed)
     samples: List[H5Sample] = []
     with h5py.File(h5_path, "r") as f:
@@ -58,10 +73,19 @@ def build_sample_index(
                 T_img = int(imgs.shape[0])  # frames per session
                 if T_img <= 0:
                     continue
-                idxs = _sample_indices(rng, T_img, k_per_session)
+
+                if split == "train":
+                    idxs = _sample_indices(rng, T_img, k_per_session)
+                else:
+                    # Deterministic per-session indices (stable across runs/platforms)
+                    sseed = _stable_session_seed(seed, subject, session)
+                    srng = np.random.default_rng(sseed)
+                    idxs = _sample_indices(srng, T_img, k_per_session)
+
                 for idx in idxs:
                     samples.append(H5Sample(subject=subject, session=session, idx=int(idx)))
     return samples
+
 
 
 def _ensure_nhwc(img: np.ndarray) -> np.ndarray:
@@ -190,9 +214,9 @@ def load_dataloaders(
         train_subjects, test_size=val_ratio, random_state=seed, shuffle=True
     )
 
-    train_samples = build_sample_index(h5_path, train_subjects, k_per_session=k_per_session, seed=seed)
-    val_samples = build_sample_index(h5_path, val_subjects, k_per_session=k_per_session, seed=seed + 1)
-    test_samples = build_sample_index(h5_path, test_subjects, k_per_session=k_per_session, seed=seed + 2)
+    train_samples = build_sample_index(h5_path, train_subjects, k_per_session=k_per_session, seed=seed, split="train")
+    val_samples = build_sample_index(h5_path, val_subjects, k_per_session=k_per_session, seed=seed + 1, split="val")
+    test_samples = build_sample_index(h5_path, test_subjects, k_per_session=k_per_session, seed=seed + 2, split="test")
 
     train_dataset = H5EyeGazeDataset(
         h5_path=h5_path, samples=train_samples, grayscale=grayscale, normalize=normalize, resize_hw=resize_hw
