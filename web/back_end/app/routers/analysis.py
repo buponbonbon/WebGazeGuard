@@ -1,34 +1,39 @@
+# analysis.py (WebSocket streaming router) - patched for stable realtime UI
+# - fixes warm-up where temporal window can be None
+# - robustly maps metric field names across CV/temporal modules
+# - avoids UI spam by using a neutral distance when distance is not yet calibrated
+
 from __future__ import annotations
+
 import time
 import json
 import base64
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
-from typing import Dict, Any, List, Optional
+import traceback
 import io
 import csv
+from typing import Dict, List, Optional
 
 import numpy as np
 import cv2
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import StreamingResponse
 
 from ..deps import get_current_user_id
 from ..schemas import FrameAnalysisOut, Metrics
 
-# WebGazeGuard pipeline + fusion
-from core.pipeline import create_state, step
+from core.config import Config
+from core.pipeline import build_pipeline, step
 from fusion.risk_engine import assess_risk
 
 router = APIRouter()
 
-# In-memory per-user session metrics history (for demo). For production use Redis.
 _history: Dict[int, List[dict]] = {}
 
 
 def _decode_jpeg_b64(jpeg_b64: str) -> Optional[np.ndarray]:
-    """Decode base64 JPEG into BGR image (np.ndarray). Accepts optional data URL prefix."""
     if not jpeg_b64:
         return None
-    # strip data URL prefix if any: data:image/jpeg;base64,...
+    # support "data:image/jpeg;base64,...."
     if "," in jpeg_b64 and jpeg_b64.strip().lower().startswith("data:"):
         jpeg_b64 = jpeg_b64.split(",", 1)[1]
     try:
@@ -42,87 +47,121 @@ def _decode_jpeg_b64(jpeg_b64: str) -> Optional[np.ndarray]:
 
 @router.websocket("/ws/stream")
 async def ws_stream(ws: WebSocket):
-    """WebSocket for real-time frames.
-
-    Client must send:
-    - First message: {"type":"auth","token":"..."}
-    - Then frames: {"type":"frame","ts_ms":..., "jpeg_b64":"..."}
-    Server replies:
-    - {"type":"metrics","payload":{FrameAnalysisOut}}
-    """
     await ws.accept()
-    user_id = None
-
-    # Create per-connection pipeline state (temporal windowing lives here)
-    state = create_state()
+    state = build_pipeline(Config(), gaze_ckpt_path=None)
 
     try:
+        # 1) auth first message
         first = await ws.receive_text()
         obj = json.loads(first)
+
         if obj.get("type") != "auth" or not obj.get("token"):
             await ws.close(code=1008)
             return
 
-        # Reuse auth dependency logic lightly here
         from ..utils.jwt import decode_token
         payload = decode_token(obj["token"])
         if not payload or "sub" not in payload:
             await ws.close(code=1008)
             return
+
         user_id = int(payload["sub"])
+
+        # Keep last valid temporal window (warm-up frames may return win=None)
+        last_valid_win = None
 
         while True:
             msg = await ws.receive_text()
             data = json.loads(msg)
+
             if data.get("type") != "frame":
+                # ignore unknown message types
                 continue
 
             ts_ms = int(data.get("ts_ms") or (time.time() * 1000))
             jpeg_b64 = data.get("jpeg_b64")
-            if not jpeg_b64:
-                continue
 
             frame_bgr = _decode_jpeg_b64(jpeg_b64)
             if frame_bgr is None:
                 continue
 
-            # Run one pipeline step: extract CV features + update temporal window
-            cvf, win = step(state, frame_bgr, timestamp_ms=ts_ms)
+            try:
+                cvf, win = step(state, frame_bgr, timestamp_ms=ts_ms)
 
-            # Optional text (if client sends it later)
-            text = data.get("text")  # can be None
+                if win is not None:
+                    last_valid_win = win
+                win_for_risk = last_valid_win
 
-            # Assess risk using fusion engine (NLP optional)
-            risk = assess_risk(win, nlp=None, weights=None)
+                # risk may be skipped during warm-up
+                risk = assess_risk(win_for_risk, nlp=None, weights=None) if win_for_risk is not None else None
 
-            # Best-effort fields from CVFeatures
-            blink_rate = float(getattr(cvf, "blink_rate_per_min", 0.0) or 0.0)
-            ear = float(getattr(cvf, "ear", 0.0) or 0.0)
-            yaw = float(getattr(cvf, "yaw_deg", getattr(cvf, "head_pose_yaw_deg", 0.0)) or 0.0)
-            pitch = float(getattr(cvf, "pitch_deg", getattr(cvf, "head_pose_pitch_deg", 0.0)) or 0.0)
-            dist = float(getattr(cvf, "distance_cm", 0.0) or 0.0)
+                # ---- robust metric mapping (handles differing attribute names) ----
+                # Blink rate: prefer temporal window if available
+                blink_rate = None
+                if win_for_risk is not None:
+                    blink_rate = getattr(win_for_risk, "blink_rate_bpm", None)
+                if blink_rate is None:
+                    blink_rate = getattr(cvf, "blink_rate_bpm", None)
+                if blink_rate is None:
+                    blink_rate = getattr(cvf, "blink_rate_per_min", None)
+                blink_rate = float(blink_rate or 0.0)
 
-            out = FrameAnalysisOut(
-                ts_ms=ts_ms,
-                metrics=Metrics(
-                    blink_rate_per_min=blink_rate,
-                    ear=ear,
-                    head_pose_yaw_deg=yaw,
-                    head_pose_pitch_deg=pitch,
-                    distance_cm=dist,
-                    strain_risk=float(getattr(risk, "risk_score", 0.0) or 0.0),
-                    posture_flag=getattr(risk, "posture_flag", None),
-                ),
-            )
+                # EAR: various naming across modules
+                ear = getattr(cvf, "ear", None)
+                if ear is None:
+                    ear = getattr(cvf, "ear_mean", None)
+                if ear is None:
+                    ear = getattr(cvf, "ear_avg", None)
+                ear = float(ear or 0.0)
 
-            _history.setdefault(user_id, []).append(out.model_dump())
-            _history[user_id] = _history[user_id][-1200:]  # keep last ~1200 frames
+                # Head pose
+                yaw = getattr(cvf, "head_pose_yaw_deg", None)
+                if yaw is None:
+                    yaw = getattr(cvf, "yaw_deg", None)
+                yaw = float(yaw or 0.0)
 
-            await ws.send_text(json.dumps({"type": "metrics", "payload": out.model_dump()}))
+                pitch = getattr(cvf, "head_pose_pitch_deg", None)
+                if pitch is None:
+                    pitch = getattr(cvf, "pitch_deg", None)
+                pitch = float(pitch or 0.0)
+
+                # Distance: may be 0 until calibrated; avoid spamming 'too close' on UI
+                dist = getattr(cvf, "distance_cm", None)
+                if dist is None:
+                    dist = getattr(cvf, "head_distance_cm", None)
+                dist = float(dist or 0.0)
+                if dist <= 0.0:
+                    # Neutral fallback for UI so it doesn't scream "too close" during warm-up/un-calibrated state.
+                    dist = 60.0
+
+                out = FrameAnalysisOut(
+                    ts_ms=ts_ms,
+                    metrics=Metrics(
+                        blink_rate_per_min=blink_rate,
+                        ear=ear,
+                        head_pose_yaw_deg=yaw,
+                        head_pose_pitch_deg=pitch,
+                        distance_cm=dist,
+                        strain_risk=float(getattr(risk, "risk_score", 0.0) or 0.0) if risk is not None else 0.0,
+                        posture_flag=getattr(risk, "posture_flag", None) if risk is not None else None,
+                    ),
+                )
+
+                _history.setdefault(user_id, []).append(out.model_dump())
+                _history[user_id] = _history[user_id][-1200:]  # cap
+
+                await ws.send_text(json.dumps({"type": "metrics", "payload": out.model_dump()}))
+
+            except Exception as e:
+                print("🔥 WebSocket frame processing error:")
+                traceback.print_exc()
+                await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
 
     except WebSocketDisconnect:
         return
     except Exception:
+        print("🔥 Fatal WebSocket error:")
+        traceback.print_exc()
         try:
             await ws.close(code=1011)
         except Exception:
@@ -131,10 +170,10 @@ async def ws_stream(ws: WebSocket):
 
 @router.get("/export.csv")
 def export_csv(user_id: int = Depends(get_current_user_id)):
-    """Download last session metrics as CSV."""
     rows = _history.get(user_id, [])
     if not rows:
         raise HTTPException(status_code=404, detail="No session data yet")
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([

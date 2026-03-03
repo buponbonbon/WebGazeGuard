@@ -9,3 +9,15 @@ matplotlib
 mediapipe==0.10.9
 transformers>=4.36.0
 sentencepiece>=0.1.99
+fastapi
+uvicorn
+python-multipart
+python-jose
+passlib[bcrypt]
+pydantic-settings
+pydantic
+email-validator
+sqlalchemy
+PyJWT
+websockets
+bcrypt==3.2.2
