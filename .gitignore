@@ -21,14 +21,29 @@ logs/
 # Local environment
 .env
 venv/
+
 # Output images from data analysis
 analysis_output/
 *.png
 *.jpg
 eda/
+
 # Add env files
 .env
 .env.*
 !.env.example
-# 
+
+# DB
+.DS_Store
+Thumbs.db
 web/back_end/*.db
+*.db
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+web/front_end/node_modules/
