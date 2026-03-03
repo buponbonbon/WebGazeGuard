@@ -76,7 +76,7 @@ export function CameraStreamer({ onMetrics }) {
       video.srcObject = stream;
       running = true;
 
-      ws = new WebSocket(wsUrl('/ws/stream'));
+      ws = new WebSocket(wsUrl('/api/ws/stream'));
       ws.onopen = () => {
         ws.send(JSON.stringify({ type:'auth', token }));
         toast('Kết nối realtime thành công', 'ok');
