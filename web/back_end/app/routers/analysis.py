@@ -1,7 +1,4 @@
-# analysis.py (WebSocket streaming router) - patched for stable realtime UI
-# - fixes warm-up where temporal window can be None
-# - robustly maps metric field names across CV/temporal modules
-# - avoids UI spam by using a neutral distance when distance is not yet calibrated
+
 
 from __future__ import annotations
 
@@ -23,6 +20,7 @@ from ..schemas import FrameAnalysisOut, Metrics
 
 from core.config import Config
 from core.pipeline import build_pipeline, step
+from vision.head_distance import calibrate_from_frames, DistanceCalib
 from fusion.risk_engine import assess_risk
 
 router = APIRouter()
@@ -33,7 +31,7 @@ _history: Dict[int, List[dict]] = {}
 def _decode_jpeg_b64(jpeg_b64: str) -> Optional[np.ndarray]:
     if not jpeg_b64:
         return None
-    # support "data:image/jpeg;base64,...."
+
     if "," in jpeg_b64 and jpeg_b64.strip().lower().startswith("data:"):
         jpeg_b64 = jpeg_b64.split(",", 1)[1]
     try:
@@ -43,6 +41,19 @@ def _decode_jpeg_b64(jpeg_b64: str) -> Optional[np.ndarray]:
         return img
     except Exception:
         return None
+
+
+
+async def _safe_send_text(ws: WebSocket, payload: dict) -> bool:
+    #Send JSON payload over WS. Return False if client disconnected.
+    try:
+        await ws.send_text(json.dumps(payload))
+        return True
+    except WebSocketDisconnect:
+        return False
+    except Exception:
+        # any other send error -> treat as disconnected
+        return False
 
 
 @router.websocket("/ws/stream")
@@ -70,11 +81,24 @@ async def ws_stream(ws: WebSocket):
         # Keep last valid temporal window (warm-up frames may return win=None)
         last_valid_win = None
 
+        # Distance calibration via WS:
+        # Client sends: {type:'calibrate', Z0_cm:60, n_frames:20}
+        calib_collect = None  # dict with keys: Z0_cm, n_frames, s_values(list)
+
         while True:
             msg = await ws.receive_text()
             data = json.loads(msg)
 
-            if data.get("type") != "frame":
+            msg_type = data.get("type")
+            if msg_type == "calibrate":
+                # start collecting interocular pixel distances from next frames
+                Z0_cm = float(data.get("Z0_cm") or 60.0)
+                n_frames = int(data.get("n_frames") or 20)
+                n_frames = max(5, min(120, n_frames))
+                calib_collect = {"Z0_cm": Z0_cm, "n_frames": n_frames, "s_values": []}
+                await ws.send_text(json.dumps({"type":"toast","level":"info","message":f"Đang hiệu chuẩn ({n_frames} frames). Giữ mặt ổn định ở ~{Z0_cm:.0f}cm"}))
+                continue
+            if msg_type != "frame":
                 # ignore unknown message types
                 continue
 
@@ -87,6 +111,28 @@ async def ws_stream(ws: WebSocket):
 
             try:
                 cvf, win = step(state, frame_bgr, timestamp_ms=ts_ms)
+
+                # --- calibration collection ---
+                if calib_collect is not None:
+                    s_px = getattr(state.vision, "_last_s_px", None)
+                    if s_px is not None and np.isfinite(s_px) and float(s_px) > 0:
+                        calib_collect["s_values"].append(float(s_px))
+                    if len(calib_collect["s_values"]) >= int(calib_collect["n_frames"]):
+                        try:
+                            calib = calibrate_from_frames(np.asarray(calib_collect["s_values"], dtype=np.float64), Z0_cm=float(calib_collect["Z0_cm"]))
+                            # update live pipeline calibration
+                            state.vision.distance_calib = calib
+                            ok = await _safe_send_text(ws, {"type":"calibrated","payload":{"Z0_cm":calib.Z0_cm,"s0_px":calib.s0_px}})
+                            if not ok:
+                                return
+                            ok = await _safe_send_text(ws, {"type":"toast","level":"ok","message":f"Hiệu chuẩn xong: Z0={calib.Z0_cm:.0f}cm, s0={calib.s0_px:.1f}px"})
+                            if not ok:
+                                return
+                        except Exception as e:
+                            ok = await _safe_send_text(ws, {"type":"toast","level":"info","message":f"Đang hiệu chuẩn ({n_frames} frames). Giữ mặt ổn định ở ~{Z0_cm:.0f}cm"})
+                            if not ok:
+                                return
+                        calib_collect = None
 
                 if win is not None:
                     last_valid_win = win
@@ -114,15 +160,19 @@ async def ws_stream(ws: WebSocket):
                     ear = getattr(cvf, "ear_avg", None)
                 ear = float(ear or 0.0)
 
-                # Head pose
+                # Head pose (core.schemas.CVFeatures uses yaw/pitch/roll)
                 yaw = getattr(cvf, "head_pose_yaw_deg", None)
                 if yaw is None:
                     yaw = getattr(cvf, "yaw_deg", None)
+                if yaw is None:
+                    yaw = getattr(cvf, "yaw", None)
                 yaw = float(yaw or 0.0)
 
                 pitch = getattr(cvf, "head_pose_pitch_deg", None)
                 if pitch is None:
                     pitch = getattr(cvf, "pitch_deg", None)
+                if pitch is None:
+                    pitch = getattr(cvf, "pitch", None)
                 pitch = float(pitch or 0.0)
 
                 # Distance: may be 0 until calibrated; avoid spamming 'too close' on UI
@@ -150,12 +200,16 @@ async def ws_stream(ws: WebSocket):
                 _history.setdefault(user_id, []).append(out.model_dump())
                 _history[user_id] = _history[user_id][-1200:]  # cap
 
-                await ws.send_text(json.dumps({"type": "metrics", "payload": out.model_dump()}))
+                ok = await _safe_send_text(ws, {"type": "metrics", "payload": out.model_dump()})
+                if not ok:
+                    return
 
             except Exception as e:
                 print("🔥 WebSocket frame processing error:")
                 traceback.print_exc()
-                await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
+                ok = await _safe_send_text(ws, {"type": "error", "message": str(e)})
+                if not ok:
+                    return
 
     except WebSocketDisconnect:
         return

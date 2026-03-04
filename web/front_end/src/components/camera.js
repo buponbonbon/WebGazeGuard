@@ -85,6 +85,11 @@ export function CameraStreamer({ onMetrics }) {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'metrics') onMetrics?.(msg.payload);
+          if (msg.type === 'toast') toast(msg.message || '', msg.level || 'info');
+          if (msg.type === 'calibrated') {
+            const p = msg.payload || {};
+            toast(`Hiệu chuẩn xong: Z0=${Math.round(p.Z0_cm||0)}cm, s0=${(p.s0_px||0).toFixed(1)}px`, 'ok');
+          }
         } catch {}
       };
       ws.onerror = ()=> toast('WebSocket lỗi', 'err');
