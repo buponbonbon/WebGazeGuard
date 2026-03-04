@@ -17,6 +17,7 @@ from vision.landmarks import FaceLandmarker
 from vision.ear import compute_ear_both_eyes
 from vision.blink import BlinkDetector
 from vision.head_pose import estimate_head_pose_pnp
+from vision.head_distance import estimate_distance_cm, DistanceCalib
 
 # Face Mesh indices
 L_EYE_OUTER = 33
@@ -131,6 +132,9 @@ class VisionExtractor:
         self.landmarker = FaceLandmarker()
         self.blink = BlinkDetector(ear_thresh, ear_consec_frames)
 
+        self.distance_calib = distance_calib
+        self._last_s_px: Optional[float] = None
+
         self.gaze_ckpt_path = gaze_ckpt_path
         self.gaze_every_n = max(1, int(gaze_every_n_frames))
         self.gaze_resize_hw = tuple(gaze_resize_hw)
@@ -230,6 +234,11 @@ class VisionExtractor:
 
         lms_xy = _dict_to_array(lm.xy)
 
+        # --- distance estimation (Z = Z0 * s0 / s) ---
+        s_px = _interocular_px(lms_xy)
+        self._last_s_px = float(s_px) if np.isfinite(s_px) else None
+        distance_cm = estimate_distance_cm(s_px, self.distance_calib) if self.distance_calib is not None else None
+
         ear_l, ear_r, ear_m = compute_ear_both_eyes(lms_xy)
 
         pose = estimate_head_pose_pnp(lms_xy, frame_bgr.shape)
@@ -242,6 +251,7 @@ class VisionExtractor:
         payload: Dict[str, Any] = dict(
             timestamp_ms=int(timestamp_ms),
             face_detected=True,
+            distance_cm=distance_cm,
             ear_left=float(ear_l),
             ear_right=float(ear_r),
             ear_mean=float(ear_m),
