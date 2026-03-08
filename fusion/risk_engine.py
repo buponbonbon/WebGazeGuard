@@ -80,6 +80,7 @@ def _blink_risk(blink_rate_bpm: Optional[float]) -> float:
 def _posture_risk(pitch_mean: Optional[float], yaw_mean: Optional[float]) -> Tuple[float, Optional[str]]:
     # pitch/yaw are degrees in your pipeline
     # large absolute angles suggest poor posture/neck strain
+    # map flags to web Metrics schema: OK | FORWARD_HEAD | TILT
     if pitch_mean is None and yaw_mean is None:
         return 0.0, None
 
@@ -92,10 +93,11 @@ def _posture_risk(pitch_mean: Optional[float], yaw_mean: Optional[float]) -> Tup
 
     score = _clip01(0.6 * pitch_s + 0.4 * yaw_s)
 
-    flag = None
-    if score >= 0.7:
-        flag = "poor_posture"
-    return score, flag
+    if score < 0.7:
+        return score, None
+    if p >= y:
+        return score, "FORWARD_HEAD"
+    return score, "TILT"
 
 
 def _nlp_risk(nlp: Optional[NLPFeatures]) -> Tuple[float, Optional[str], float]:
@@ -189,7 +191,7 @@ def assess_risk(
         exp_bits.append("blink_rate_low")
     if dist_flag:
         exp_bits.append(dist_flag)
-    if posture_flag:
+    if posture_flag in ("FORWARD_HEAD", "TILT"):
         exp_bits.append(posture_flag)
     if nlp_lab and nlp_lab != "None" and nlp_s >= 0.4:
         exp_bits.append(f"symptom_{nlp_lab}")
