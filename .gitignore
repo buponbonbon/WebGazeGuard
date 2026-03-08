@@ -23,7 +23,7 @@ logs/
 venv/
 
 # Output images from data analysis
-analysis_output/
+analysis_outputs/
 *.png
 *.jpg
 eda/
