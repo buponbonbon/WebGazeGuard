@@ -55,6 +55,18 @@ def _interocular_px(lms_xy: np.ndarray) -> float:
     return float(np.linalg.norm(pL - pR))
 
 
+def _distance_category(distance_cm: Optional[float]) -> Optional[str]:
+    """Map viewing distance (cm) -> category used by temporal/fusion."""
+    if distance_cm is None or not np.isfinite(distance_cm):
+        return None
+    d = float(distance_cm)
+    if d < 50.0:
+        return "too_close"
+    if d > 70.0:
+        return "too_far"
+    return "normal"
+
+
 def _crop_bbox_from_idxs(
     frame_bgr: np.ndarray,
     lms_xy: np.ndarray,
@@ -238,6 +250,7 @@ class VisionExtractor:
         s_px = _interocular_px(lms_xy)
         self._last_s_px = float(s_px) if np.isfinite(s_px) else None
         distance_cm = estimate_distance_cm(s_px, self.distance_calib) if self.distance_calib is not None else None
+        distance_cat = _distance_category(distance_cm)
 
         ear_l, ear_r, ear_m = compute_ear_both_eyes(lms_xy)
 
@@ -246,12 +259,13 @@ class VisionExtractor:
         pitch = pose["pitch"] if pose else None
         roll = pose["roll"] if pose else None
 
-        blink_flag = self.blink.update(float(ear_m))
+        blink_flag = self.blink.update(float(ear_m), timestamp_ms=timestamp_ms)
 
         payload: Dict[str, Any] = dict(
             timestamp_ms=int(timestamp_ms),
             face_detected=True,
             distance_cm=distance_cm,
+            distance_cat=distance_cat,
             ear_left=float(ear_l),
             ear_right=float(ear_r),
             ear_mean=float(ear_m),

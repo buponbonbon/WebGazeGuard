@@ -42,9 +42,9 @@ class BlinkDetector:
             mid = len(sorted_vals) // 2
             self._ear_baseline = sorted_vals[mid]
 
-    def update(self, ear_mean):
+    def update(self, ear_mean, timestamp_ms=None):
         blink = False
-        now_ms = int(time.time() * 1000)
+        now_ms = int(timestamp_ms) if timestamp_ms is not None else int(time.time() * 1000)
 
         if ear_mean is None:
             return False
