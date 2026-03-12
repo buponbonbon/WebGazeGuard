@@ -127,27 +127,104 @@ pip install -r requirements.txt
 
 ---
 
-## Running the Demo
+## Running the Web Demo
 
-### Offline Video
+The web demo consists of a **FastAPI backend** and a **Vite frontend**.
+
+Two terminals are required:
+- Terminal 1 → backend
+- Terminal 2 → frontend
+
+---
+
+### 1. Start the Backend
+
+Open **Git Bash in the project root** and activate the virtual environment:
 
 ```bash
-python runners/offline_video.py
+source venv/Scripts/activate
 ```
 
-### Real-time Webcam
+Start the FastAPI backend:
 
 ```bash
-python runners/online_webcam.py
+python -m uvicorn web.back_end.app.main:app --reload
 ```
 
-### Full System Entry
+If the backend starts successfully, open the API documentation in your browser:
 
-```bash
-python main.py
+```
+http://127.0.0.1:8000/docs
 ```
 
 ---
+
+### 2. Obtain an Access Token
+
+In another terminal, activate the environment again:
+
+```bash
+source venv/Scripts/activate
+```
+
+Register a test user using `curl`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/auth/register \
+-H "Content-Type: application/json" \
+-d "{\"username\":\"test\",\"email\":\"test@example.com\",\"password\":\"test123\"}"
+```
+
+The response will return a JSON object containing the **access token**.
+
+Example response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+Copy this token for use in the web interface.
+
+---
+
+### 3. Start the Frontend
+
+Open **another Git Bash terminal** and navigate to the frontend directory:
+
+```bash
+cd web/front_end
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run the development server:
+
+```bash
+npm run dev
+```
+
+The frontend will start at:
+
+```
+http://localhost:5173
+```
+
+---
+
+### 4. Run the Demo
+
+1. Open the frontend in your browser.
+2. Paste the **access token** obtained earlier.
+3. Allow webcam access.
+4. Start the webcam stream.
+
+The system will perform **real-time eye strain risk estimation** using multimodal behavioral signals.
 
 ## Output
 
