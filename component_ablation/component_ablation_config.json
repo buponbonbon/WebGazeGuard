@@ -1,0 +1,10 @@
+{
+  "distance_inference": true,
+  "too_close_cm": 50.0,
+  "too_far_cm": 75.0,
+  "weights": {
+    "blink": 0.3,
+    "distance": 0.25,
+    "posture": 0.25
+  }
+}

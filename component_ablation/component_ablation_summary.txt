@@ -1,0 +1,20 @@
+WebGazeGuard Component Ablation Summary
+==========================================
+
+[Normal usage]
+- Full system: mean=0.1766, std=0.1872, min=0.0000, max=0.3750
+- Without blink: mean=0.0000, std=0.0005, min=0.0000, max=0.0067
+- Without distance: mean=0.2568, std=0.2722, min=0.0000, max=0.5455
+- Without posture: mean=0.2568, std=0.2723, min=0.0000, max=0.5455
+
+[Head movement]
+- Full system: mean=0.1100, std=0.1706, min=0.0000, max=0.4092
+- Without blink: mean=0.0015, std=0.0058, min=0.0000, max=0.0547
+- Without distance: mean=0.1599, std=0.2481, min=0.0000, max=0.5952
+- Without posture: mean=0.1586, std=0.2477, min=0.0000, max=0.5455
+
+[Low light]
+- Full system: mean=0.1217, std=0.1764, min=0.0000, max=0.4334
+- Without blink: mean=0.0095, std=0.0162, min=0.0000, max=0.0934
+- Without distance: mean=0.1769, std=0.2566, min=0.0000, max=0.6304
+- Without posture: mean=0.1684, std=0.2520, min=0.0000, max=0.5455
