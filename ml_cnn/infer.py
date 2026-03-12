@@ -1,22 +1,4 @@
-"""
-ml_cnn/infer_rt.py
 
-Realtime-friendly inference helpers for gaze regression.
-
-Why this file:
-- Your original infer.py supports image-path inference, but demo_pipeline needs
-  inference directly from numpy arrays (eye crops) with optional resize and consistent preprocessing.
-
-Key features:
-- load_model(): loads either a raw state_dict or a checkpoint dict with "model_state_dict"
-- predict_array(): predicts from a numpy array (H,W) or (H,W,C) with optional grayscale + resize
-- predict_image(): convenience wrapper for single image file (still useful for quick tests)
-
-Preprocessing matches ml_cnn/dataset.py:
-- optional grayscale conversion using 0.299/0.587/0.114
-- optional resize to (H,W)
-- normalization to [0,1] if input looks like uint8 / max>1
-"""
 
 from __future__ import annotations
 
@@ -71,13 +53,7 @@ def load_model(
     model_name: str = "custom",
     pretrained: bool = False,
 ):
-    """
-    Load a gaze regression model.
 
-    Accepts:
-    - raw state_dict checkpoint
-    - dict checkpoint with key "model_state_dict"
-    """
     model = build_model(model_name, input_channels=input_channels, output_dim=output_dim, pretrained=pretrained)
 
     state = torch.load(model_path, map_location=DEVICE)
@@ -97,17 +73,7 @@ def predict_array(
     input_channels: int = 1,
     resize_hw: Optional[Tuple[int, int]] = (64, 64),
 ) -> np.ndarray:
-    """
-    Predict gaze from a numpy eye image.
 
-    Parameters
-    - img_np: HxW or HxWxC (uint8/float32)
-    - input_channels: 1 (grayscale) or 3 (RGB)
-    - resize_hw: (H,W) or None
-
-    Returns
-    - gaze: shape (output_dim,)
-    """
     img = np.asarray(img_np)
 
     if input_channels == 1:

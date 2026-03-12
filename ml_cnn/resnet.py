@@ -1,12 +1,4 @@
-"""
-ml_cnn/resnet.py
 
-ResNet backbone for gaze regression (ResNet-18 by default).
-
-Notes:
-- Supports grayscale input (1 channel) by adapting conv1.
-- Replaces the final fully-connected layer with a regression head (output_dim).
-"""
 
 from __future__ import annotations
 
@@ -37,17 +29,7 @@ def build_resnet18_gaze(
     output_dim: int = 3,
     pretrained: bool = False,
 ) -> ResNetGaze:
-    """
-    Build a ResNet-18 regression model.
 
-    Args:
-        input_channels: 1 (grayscale) or 3 (RGB)
-        output_dim: regression output dimension
-        pretrained: use ImageNet pretrained weights (requires torchvision weights availability)
-
-    Returns:
-        ResNetGaze model
-    """
     if models is None:
         raise ImportError("torchvision is required for ResNet models but is not available.")
 

@@ -54,10 +54,9 @@ def build_sample_index(
     seed: int = 42,
     split: str = "train",  # train/val/test
 ) -> List[H5Sample]:
-    # Scan metadata only; do not load images into RAM.
-    # IMPORTANT:
-    # - train: randomized sampling (reproducible per run via `seed`)
-    # - val/test: deterministic sampling PER SESSION to prevent epoch-to-epoch validation jitter
+
+    # train: randomized sampling (reproducible per run via `seed`)
+    # val/test: deterministic sampling PER SESSION to prevent epoch-to-epoch validation jitter
     split = split.lower().strip()
     if split not in {"train", "val", "test"}:
         raise ValueError(f"Invalid split={split!r}, expected 'train'/'val'/'test'.")
@@ -77,7 +76,7 @@ def build_sample_index(
                 if split == "train":
                     idxs = _sample_indices(rng, T_img, k_per_session)
                 else:
-                    # Deterministic per-session indices (stable across runs/platforms)
+                    # Deterministic per-session indices 
                     sseed = _stable_session_seed(seed, subject, session)
                     srng = np.random.default_rng(sseed)
                     idxs = _sample_indices(srng, T_img, k_per_session)

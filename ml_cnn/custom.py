@@ -1,11 +1,4 @@
-"""
-ml_cnn/custom.py
 
-Custom lightweight CNN for gaze regression.
-
-This file was split out from the original model.py to support ablation:
-- custom CNN vs. ResNet backbone
-"""
 
 from __future__ import annotations
 
@@ -14,13 +7,7 @@ import torch.nn as nn
 
 
 class EyeGazeCNN(nn.Module):
-    """
-    Simple CNN regressor for eye-gaze.
 
-    Args:
-        input_channels: 1 for grayscale, 3 for RGB
-        output_dim: 2 (gx, gy) or 3 (vector) depending on your label format
-    """
 
     def __init__(self, input_channels: int = 1, output_dim: int = 3):
         super().__init__()

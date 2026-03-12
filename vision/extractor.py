@@ -1,11 +1,4 @@
 
-"""
-vision/extractor.py (eye-ROI tuned)
-- Keeps VisionExtractor for pipeline import.
-- Uses true eye ROI (tight) to reduce head-bias.
-- Short English comments.
-"""
-
 from __future__ import annotations
 
 from typing import Optional, Tuple, Dict, Any, List
@@ -125,11 +118,7 @@ def _crop_bbox_from_idxs(
 
 
 class VisionExtractor:
-    """
-    Frame-level CV extractor used by core.pipeline:
-      landmarks -> EAR/blink -> head pose
-      + optional gaze CNN yaw/pitch (tight eye ROI)
-    """
+
 
     def __init__(
         self,
@@ -203,11 +192,7 @@ class VisionExtractor:
         return None
 
     def _crop_eye_roi(self, frame_bgr: np.ndarray, lms_xy: np.ndarray) -> Optional[np.ndarray]:
-        """
-        Tight eye ROI:
-        - bbox on eyelid landmarks (not midpoint).
-        - bounded size to reduce head bias.
-        """
+
         if lms_xy is None or lms_xy.shape[0] < 400:
             return None
 
