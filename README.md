@@ -1,4 +1,5 @@
-# Multimodal Eye Fatigue Detection System
+# WebGazeGuard
+### A Webcam-Based System for Real-Time Eye Strain Risk Detection via Multimodal Behavioral Signals
 
 ## Overview
 
@@ -12,9 +13,8 @@ The system integrates these modalities to estimate an overall **eye strain risk 
 
 This repository is designed to support:
 
-* **Research reproducibility** (training notebooks, evaluation, analysis)
+* **Research reproducibility and experimental evaluation** (training notebooks, evaluation, analysis)
 * **Real-time inference and demo** (serving pipeline, web integration)
-* **Conference submission**
 
 ---
 
@@ -65,7 +65,8 @@ text preprocessing → PhoBERT encoder → severity classifier → report genera
 The classifier outputs:
 
 * **Severity level** (low / medium / high)
-* **User-facing bilingual report** (Vietnamese / English)
+* **The classifier predicts eye strain severity levels (low / medium / high)
+based on user symptom descriptions.
 
 ### 4. Multimodal Risk Fusion
 
@@ -154,7 +155,8 @@ The system returns structured JSON including:
 
 * Fatigue **severity label**
 * **Risk score**
-* **Bilingual recommendations** (VI / EN)
+* **The classifier predicts eye strain severity levels (low / medium / high)
+based on user symptom descriptions.
 * Optional CV and NLP diagnostic metrics
 
 ---
@@ -175,11 +177,4 @@ This project is intended for **academic and research use**.
 Please contact the authors for other usage permissions.
 
 ---
-
-## Authors
-
-* Computer Vision & Temporal Modeling
-* CNN Gaze Estimation
-* NLP & Multimodal Fusion
-* System Integration & Web Deployment
 
