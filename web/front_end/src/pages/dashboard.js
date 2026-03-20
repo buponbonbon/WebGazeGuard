@@ -44,14 +44,14 @@ export function Dashboard() {
   page.appendChild(content);
 
   const camera = CameraStreamer({
-    onMetrics: (payload) => {
-      metrics.setMetrics(payload.metrics);
-      // realtime alerts
-      const r = payload.metrics.strain_risk || 0;
+    onMetrics: (m) => {
+      metrics.setMetrics(m);
+
+      const r = m.strain_risk || 0;
       if (r > 0.75) toast('Nguy cơ mỏi mắt cao → nghỉ 20–30s và chớp mắt', 'warn');
-      if ((payload.metrics.distance_cm || 0) < 45) toast('Bạn đang ngồi quá gần màn hình', 'warn');
+      if ((m.distance_cm || 0) < 45) toast('Bạn đang ngồi quá gần màn hình', 'warn');
     }
-  });
+  }); 
   content.appendChild(camera);
 
   const metrics = MetricsGrid();

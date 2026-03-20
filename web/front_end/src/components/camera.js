@@ -1,14 +1,10 @@
 import { wsUrl, getToken } from '../lib/api.js';
 import { toast } from '../lib/toast.js';
 
-/**
- * Camera + WebSocket streamer
- * - Uses requestAnimationFrame loop but sends frames at a throttled rate (default 8 FPS) for performance.
- * - Downscales frames to 640px width to reduce CPU/network.
- */
 export function CameraStreamer({ onMetrics }) {
   const root = document.createElement('div');
-  root.className = 'relative flex flex-col items-center justify-center bg-black aspect-video rounded-2xl overflow-hidden border border-primary/20 shadow-2xl shadow-primary/5';
+  root.className =
+    'relative flex flex-col items-center justify-center bg-black aspect-video rounded-2xl overflow-hidden border border-primary/20 shadow-2xl shadow-primary/5';
 
   const video = document.createElement('video');
   video.className = 'absolute inset-0 w-full h-full object-cover opacity-90';
@@ -51,7 +47,7 @@ export function CameraStreamer({ onMetrics }) {
   root.appendChild(controls);
 
   const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { alpha:false, willReadFrequently:false });
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
 
   let ws;
   let stream;
@@ -59,48 +55,90 @@ export function CameraStreamer({ onMetrics }) {
   let lastSent = 0;
   const sendEveryMs = 125; // ~8 FPS
 
-  function setHud({ mesh='TRUE', latency='--' } = {}) {
+  function setHud({ mesh = 'TRUE', latency = '--' } = {}) {
     hud.querySelector('[data-mesh]').textContent = `MESH_ACTIVE: ${mesh}`;
     hud.querySelector('[data-lat]').textContent = `LATENCY: ${latency}`;
   }
 
   async function start() {
     if (running) return;
+
     const token = getToken();
+    console.log('TOKEN =', token);
+
     if (!token) {
       toast('Bạn cần đăng nhập để dùng camera', 'warn');
       return;
     }
+
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'user' }, audio:false });
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false,
+      });
+
       video.srcObject = stream;
       running = true;
 
       ws = new WebSocket(wsUrl('/api/ws/stream'));
+
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type:'auth', token }));
+        console.log('WS OPEN');
+        const authMsg = { type: 'auth', token };
+        console.log('SEND AUTH:', authMsg);
+        ws.send(JSON.stringify(authMsg));
         toast('Kết nối realtime thành công', 'ok');
       };
-      ws.onmessage = (ev)=> {
+
+      ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === 'metrics') onMetrics?.(msg.payload);
-          if (msg.type === 'toast') toast(msg.message || '', msg.level || 'info');
+          console.log('WS RECV:', msg);
+
+          if (msg.type === 'metrics') {
+            const m = msg.payload?.metrics;
+            console.log('METRICS:', m);
+            if (m) onMetrics?.(m);
+            return;
+          }
+
+          if (msg.type === 'toast') {
+            toast(msg.message || '', msg.level || 'info');
+            return;
+          }
+
           if (msg.type === 'calibrated') {
             const p = msg.payload || {};
-            toast(`Hiệu chuẩn xong: Z0=${Math.round(p.Z0_cm||0)}cm, s0=${(p.s0_px||0).toFixed(1)}px`, 'ok');
+            toast(
+              `Hiệu chuẩn xong: Z0=${Math.round(p.Z0_cm || 0)}cm, s0=${(p.s0_px || 0).toFixed(1)}px`,
+              'ok'
+            );
           }
-        } catch {}
+        } catch (e) {
+          console.error('WS parse error:', e, ev.data);
+        }
       };
-      ws.onerror = ()=> toast('WebSocket lỗi', 'err');
-      ws.onclose = ()=> { /* silent */ };
+
+      ws.onerror = (e) => {
+        console.error('WS ERROR:', e);
+        toast('WebSocket lỗi', 'err');
+      };
+
+      ws.onclose = (ev) => {
+        console.warn('WS CLOSED:', ev.code, ev.reason);
+        if (ev.code === 1008) {
+          toast('Auth fail (token lỗi hoặc hết hạn)', 'err');
+        }
+      };
 
       const loop = () => {
         if (!running) return;
+
         const t0 = performance.now();
 
         const vw = video.videoWidth || 640;
         const vh = video.videoHeight || 360;
+
         if (vw && vh) {
           const targetW = Math.min(640, vw);
           const targetH = Math.round(vh * (targetW / vw));
@@ -111,17 +149,26 @@ export function CameraStreamer({ onMetrics }) {
           const now = performance.now();
           if (now - lastSent >= sendEveryMs && ws && ws.readyState === 1) {
             lastSent = now;
-            const jpeg = canvas.toDataURL('image/jpeg', 0.6).split(',')[1]; // base64
-            ws.send(JSON.stringify({ type:'frame', ts_ms: Date.now(), jpeg_b64: jpeg }));
+            const jpeg = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+            console.log('SENDING FRAME:', jpeg.length);
+            ws.send(
+              JSON.stringify({
+                type: 'frame',
+                ts_ms: Date.now(),
+                jpeg_b64: jpeg,
+              })
+            );
           }
         }
 
         const t1 = performance.now();
-        setHud({ mesh:'TRUE', latency: `${Math.round(t1 - t0)}ms` });
+        setHud({ mesh: 'TRUE', latency: `${Math.round(t1 - t0)}ms` });
         requestAnimationFrame(loop);
       };
+
       requestAnimationFrame(loop);
     } catch (e) {
+      console.error('CAMERA ERROR:', e);
       toast('Không mở được camera: hãy cho phép quyền Camera', 'err');
       running = false;
     }
@@ -129,20 +176,37 @@ export function CameraStreamer({ onMetrics }) {
 
   function stop() {
     running = false;
-    if (ws) { try { ws.close(); } catch {} }
+    if (ws) {
+      try {
+        ws.close();
+      } catch {}
+    }
     if (stream) {
-      stream.getTracks().forEach(t => t.stop());
+      stream.getTracks().forEach((t) => t.stop());
       stream = null;
     }
     toast('Đã dừng camera', 'info');
   }
 
   controls.querySelector('[data-stop]').addEventListener('click', stop);
+
   controls.querySelector('[data-calib]').addEventListener('click', () => {
-    toast('Hiệu chuẩn: (demo) đặt mặt cách màn hình ~60cm và nhìn thẳng 2s', 'info');
+    if (!ws || ws.readyState !== 1) {
+      toast('WebSocket chưa sẵn sàng để hiệu chuẩn', 'warn');
+      return;
+    }
+
+    ws.send(
+      JSON.stringify({
+        type: 'calibrate',
+        Z0_cm: 60,
+        n_frames: 20,
+      })
+    );
+
+    toast('Đang hiệu chuẩn ở ~60cm, giữ mặt ổn định trong 1–2 giây', 'info');
   });
 
-  // Autostart when component mounts
   setTimeout(start, 250);
 
   root.__start = start;
