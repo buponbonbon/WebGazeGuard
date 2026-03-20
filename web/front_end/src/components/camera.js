@@ -1,4 +1,4 @@
-import { wsUrl, getToken } from '../lib/api.js';
+import { wsUrl } from '../lib/api.js';
 import { toast } from '../lib/toast.js';
 
 export function CameraStreamer({ onMetrics }) {
@@ -63,14 +63,6 @@ export function CameraStreamer({ onMetrics }) {
   async function start() {
     if (running) return;
 
-    const token = getToken();
-    console.log('TOKEN =', token);
-
-    if (!token) {
-      toast('Bạn cần đăng nhập để dùng camera', 'warn');
-      return;
-    }
-
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user' },
@@ -84,9 +76,7 @@ export function CameraStreamer({ onMetrics }) {
 
       ws.onopen = () => {
         console.log('WS OPEN');
-        const authMsg = { type: 'auth', token };
-        console.log('SEND AUTH:', authMsg);
-        ws.send(JSON.stringify(authMsg));
+        ws.send(JSON.stringify({ type: 'init' }));
         toast('Kết nối realtime thành công', 'ok');
       };
 
@@ -96,9 +86,10 @@ export function CameraStreamer({ onMetrics }) {
           console.log('WS RECV:', msg);
 
           if (msg.type === 'metrics') {
-            const m = msg.payload?.metrics;
+            const payload = msg.payload;
+            const m = payload?.metrics;
             console.log('METRICS:', m);
-            if (m) onMetrics?.(m);
+            if (payload) onMetrics?.(payload);
             return;
           }
 
@@ -127,7 +118,7 @@ export function CameraStreamer({ onMetrics }) {
       ws.onclose = (ev) => {
         console.warn('WS CLOSED:', ev.code, ev.reason);
         if (ev.code === 1008) {
-          toast('Auth fail (token lỗi hoặc hết hạn)', 'err');
+          toast('WebSocket bị từ chối', 'err');
         }
       };
 
