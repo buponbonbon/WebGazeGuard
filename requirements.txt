@@ -1,7 +1,7 @@
 torch
 torchvision
 scikit-learn
-numpy
+numpy==1.26.4
 h5py
 pandas
 opencv-python
