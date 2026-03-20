@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import time
@@ -43,9 +41,8 @@ def _decode_jpeg_b64(jpeg_b64: str) -> Optional[np.ndarray]:
         return None
 
 
-
 async def _safe_send_text(ws: WebSocket, payload: dict) -> bool:
-    #Send JSON payload over WS. Return False if client disconnected.
+    # Send JSON payload over WS. Return False if client disconnected.
     try:
         await ws.send_text(json.dumps(payload))
         return True
@@ -62,21 +59,10 @@ async def ws_stream(ws: WebSocket):
     state = build_pipeline(Config(), gaze_ckpt_path=None)
 
     try:
-        # 1) auth first message
+        # DEMO MODE: still consume first message, but skip token validation
         first = await ws.receive_text()
         obj = json.loads(first)
-
-        if obj.get("type") != "auth" or not obj.get("token"):
-            await ws.close(code=1008)
-            return
-
-        from ..utils.jwt import decode_token
-        payload = decode_token(obj["token"])
-        if not payload or "sub" not in payload:
-            await ws.close(code=1008)
-            return
-
-        user_id = int(payload["sub"])
+        user_id = 1
 
         # Keep last valid temporal window (warm-up frames may return win=None)
         last_valid_win = None
@@ -96,8 +82,18 @@ async def ws_stream(ws: WebSocket):
                 n_frames = int(data.get("n_frames") or 20)
                 n_frames = max(5, min(120, n_frames))
                 calib_collect = {"Z0_cm": Z0_cm, "n_frames": n_frames, "s_values": []}
-                await ws.send_text(json.dumps({"type":"toast","level":"info","message":f"Đang hiệu chuẩn ({n_frames} frames). Giữ mặt ổn định ở ~{Z0_cm:.0f}cm"}))
+                ok = await _safe_send_text(
+                    ws,
+                    {
+                        "type": "toast",
+                        "level": "info",
+                        "message": f"Đang hiệu chuẩn ({n_frames} frames). Giữ mặt ổn định ở ~{Z0_cm:.0f}cm",
+                    },
+                )
+                if not ok:
+                    return
                 continue
+
             if msg_type != "frame":
                 # ignore unknown message types
                 continue
@@ -117,19 +113,45 @@ async def ws_stream(ws: WebSocket):
                     s_px = getattr(state.vision, "_last_s_px", None)
                     if s_px is not None and np.isfinite(s_px) and float(s_px) > 0:
                         calib_collect["s_values"].append(float(s_px))
+
                     if len(calib_collect["s_values"]) >= int(calib_collect["n_frames"]):
                         try:
-                            calib = calibrate_from_frames(np.asarray(calib_collect["s_values"], dtype=np.float64), Z0_cm=float(calib_collect["Z0_cm"]))
+                            calib = calibrate_from_frames(
+                                np.asarray(calib_collect["s_values"], dtype=np.float64),
+                                Z0_cm=float(calib_collect["Z0_cm"]),
+                            )
                             # update live pipeline calibration
                             state.vision.distance_calib = calib
-                            ok = await _safe_send_text(ws, {"type":"calibrated","payload":{"Z0_cm":calib.Z0_cm,"s0_px":calib.s0_px}})
+
+                            ok = await _safe_send_text(
+                                ws,
+                                {
+                                    "type": "calibrated",
+                                    "payload": {"Z0_cm": calib.Z0_cm, "s0_px": calib.s0_px},
+                                },
+                            )
                             if not ok:
                                 return
-                            ok = await _safe_send_text(ws, {"type":"toast","level":"ok","message":f"Hiệu chuẩn xong: Z0={calib.Z0_cm:.0f}cm, s0={calib.s0_px:.1f}px"})
+
+                            ok = await _safe_send_text(
+                                ws,
+                                {
+                                    "type": "toast",
+                                    "level": "ok",
+                                    "message": f"Hiệu chuẩn xong: Z0={calib.Z0_cm:.0f}cm, s0={calib.s0_px:.1f}px",
+                                },
+                            )
                             if not ok:
                                 return
-                        except Exception as e:
-                            ok = await _safe_send_text(ws, {"type":"toast","level":"info","message":f"Đang hiệu chuẩn ({n_frames} frames). Giữ mặt ổn định ở ~{Z0_cm:.0f}cm"})
+                        except Exception:
+                            ok = await _safe_send_text(
+                                ws,
+                                {
+                                    "type": "toast",
+                                    "level": "info",
+                                    "message": "Hiệu chuẩn thất bại, vui lòng thử lại.",
+                                },
+                            )
                             if not ok:
                                 return
                         calib_collect = None
