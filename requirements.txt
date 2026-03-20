@@ -6,7 +6,7 @@ h5py
 pandas
 opencv-python
 matplotlib
-mediapipe==0.10.9
+mediapipe>=0.10.20
 transformers>=4.36.0
 sentencepiece>=0.1.99
 fastapi
