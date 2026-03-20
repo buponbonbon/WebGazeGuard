@@ -1,4 +1,5 @@
-# Multimodal Eye Fatigue Detection System
+# WebGazeGuard
+### A Webcam-Based System for Real-Time Eye Strain Risk Detection via Multimodal Behavioral Signals
 
 ## Overview
 
@@ -12,9 +13,8 @@ The system integrates these modalities to estimate an overall **eye strain risk 
 
 This repository is designed to support:
 
-* **Research reproducibility** (training notebooks, evaluation, analysis)
+* **Research reproducibility and experimental evaluation** (training notebooks, evaluation, analysis)
 * **Real-time inference and demo** (serving pipeline, web integration)
-* **Conference submission**
 
 ---
 
@@ -65,7 +65,8 @@ text preprocessing → PhoBERT encoder → severity classifier → report genera
 The classifier outputs:
 
 * **Severity level** (low / medium / high)
-* **User-facing bilingual report** (Vietnamese / English)
+* **The classifier predicts eye strain severity levels (low / medium / high)
+based on user symptom descriptions.
 
 ### 4. Multimodal Risk Fusion
 
@@ -126,27 +127,104 @@ pip install -r requirements.txt
 
 ---
 
-## Running the Demo
+## Running the Web Demo
 
-### Offline Video
+The web demo consists of a **FastAPI backend** and a **Vite frontend**.
+
+Two terminals are required:
+- Terminal 1 → backend
+- Terminal 2 → frontend
+
+---
+
+### 1. Start the Backend
+
+Open **Git Bash in the project root** and activate the virtual environment:
 
 ```bash
-python runners/offline_video.py
+source venv/Scripts/activate
 ```
 
-### Real-time Webcam
+Start the FastAPI backend:
 
 ```bash
-python runners/online_webcam.py
+python -m uvicorn web.back_end.app.main:app --reload
 ```
 
-### Full System Entry
+If the backend starts successfully, open the API documentation in your browser:
 
-```bash
-python main.py
+```
+http://127.0.0.1:8000/docs
 ```
 
 ---
+
+### 2. Obtain an Access Token
+
+In another terminal, activate the environment again:
+
+```bash
+source venv/Scripts/activate
+```
+
+Register a test user using `curl`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/auth/register \
+-H "Content-Type: application/json" \
+-d "{\"username\":\"test\",\"email\":\"test@example.com\",\"password\":\"test123\"}"
+```
+
+The response will return a JSON object containing the **access token**.
+
+Example response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+Copy this token for use in the web interface.
+
+---
+
+### 3. Start the Frontend
+
+Open **another Git Bash terminal** and navigate to the frontend directory:
+
+```bash
+cd web/front_end
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run the development server:
+
+```bash
+npm run dev
+```
+
+The frontend will start at:
+
+```
+http://localhost:5173
+```
+
+---
+
+### 4. Run the Demo
+
+1. Open the frontend in your browser.
+2. Paste the **access token** obtained earlier.
+3. Allow webcam access.
+4. Start the webcam stream.
+
+The system will perform **real-time eye strain risk estimation** using multimodal behavioral signals.
 
 ## Output
 
@@ -154,7 +232,8 @@ The system returns structured JSON including:
 
 * Fatigue **severity label**
 * **Risk score**
-* **Bilingual recommendations** (VI / EN)
+* **The classifier predicts eye strain severity levels (low / medium / high)
+based on user symptom descriptions.
 * Optional CV and NLP diagnostic metrics
 
 ---
@@ -175,11 +254,4 @@ This project is intended for **academic and research use**.
 Please contact the authors for other usage permissions.
 
 ---
-
-## Authors
-
-* Computer Vision & Temporal Modeling
-* CNN Gaze Estimation
-* NLP & Multimodal Fusion
-* System Integration & Web Deployment
 
