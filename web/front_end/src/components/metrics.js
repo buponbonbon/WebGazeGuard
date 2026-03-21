@@ -21,11 +21,11 @@ export function MetricsGrid() {
   };
 
   const cBlink = card('Blink Rate', 'visibility', '/min');
-  const cEar = card('EAR Value', 'data_usage', '');
+  const cGaze = card('Gaze', 'visibility', 'deg');
   const cPose = card('Head Pose', 'architecture', 'deg');
   const cDist = card('Distance', 'straighten', 'cm');
 
-  grid.append(cBlink, cEar, cPose, cDist);
+  grid.append(cBlink, cGaze, cPose, cDist);
 
   const risk = document.createElement('div');
   risk.className = 'bg-card-dark border border-white/5 p-4 rounded-2xl mt-3';
@@ -49,19 +49,34 @@ export function MetricsGrid() {
 
   function setMetrics(m) {
     if (!m) return;
-    cBlink.querySelector('[data-value]').textContent = Math.round(m.blink_rate_per_min).toString();
-    cBlink.querySelector('[data-status]').textContent = m.blink_rate_per_min < 10 ? 'Low blink → hãy chớp mắt chủ động' : 'Normal';
 
-    cEar.querySelector('[data-value]').textContent = m.ear.toFixed(2);
-    cEar.querySelector('[data-status]').textContent = m.ear < 0.18 ? 'Blinking/Closed' : 'Open';
+    const blink = Number(m.blink_rate_per_min ?? 0);
+    cBlink.querySelector('[data-value]').textContent = Math.round(blink).toString();
+    cBlink.querySelector('[data-status]').textContent =
+      blink < 10 ? 'Low blink → hãy chớp mắt chủ động' : 'Normal';
 
-    const yaw = m.head_pose_yaw_deg ?? 0;
-    const pitch = m.head_pose_pitch_deg ?? 0;
+    const gazeYaw = m.gaze_yaw_deg;
+    const gazePitch = m.gaze_pitch_deg;
+    if (gazeYaw == null && gazePitch == null) {
+      cGaze.querySelector('[data-value]').textContent = 'N/A';
+      cGaze.querySelector('[data-status]').textContent = 'Gaze unavailable';
+    } else {
+      const gy = Number(gazeYaw ?? 0);
+      const gp = Number(gazePitch ?? 0);
+      cGaze.querySelector('[data-value]').textContent = `${Math.round(gy)}° / ${Math.round(gp)}°`;
+      cGaze.querySelector('[data-status]').textContent =
+        (Math.abs(gy) > 12 || Math.abs(gp) > 8) ? 'Off-center' : 'Centered';
+    }
+
+    const yaw = Number(m.head_pose_yaw_deg ?? 0);
+    const pitch = Number(m.head_pose_pitch_deg ?? 0);
     cPose.querySelector('[data-value]').textContent = `${Math.round(yaw)}° / ${Math.round(pitch)}°`;
-    cPose.querySelector('[data-status]').textContent = (Math.abs(yaw)>12 || Math.abs(pitch)>10) ? 'Slight Tilt' : 'OK';
+    cPose.querySelector('[data-status]').textContent =
+      (Math.abs(yaw) > 12 || Math.abs(pitch) > 10) ? 'Slight Tilt' : 'OK';
 
-    cDist.querySelector('[data-value]').textContent = Math.round(m.distance_cm).toString();
-    cDist.querySelector('[data-status]').textContent = m.distance_cm < 50 ? 'Too close' : 'Optimal';
+    const dist = Number(m.distance_cm ?? 0);
+    cDist.querySelector('[data-value]').textContent = Math.round(dist).toString();
+    cDist.querySelector('[data-status]').textContent = dist < 50 ? 'Too close' : 'Optimal';
 
     const riskVal = Math.round((m.strain_risk ?? 0) * 100);
     risk.querySelector('[data-risk-text]').textContent = `${riskVal}%`;
