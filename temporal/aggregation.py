@@ -23,6 +23,8 @@ class WindowAggregator:
         self.buf_yaw = deque(maxlen=self.maxlen)
         self.buf_pitch = deque(maxlen=self.maxlen)
         self.buf_roll = deque(maxlen=self.maxlen)
+        self.buf_gaze_yaw = deque(maxlen=self.maxlen)
+        self.buf_gaze_pitch = deque(maxlen=self.maxlen)
 
         # store distance category per-frame (None if missing)
         self.buf_dist_cat = deque(maxlen=self.maxlen)
@@ -42,6 +44,8 @@ class WindowAggregator:
         self.buf_yaw.append(float(feat.yaw) if feat.yaw is not None else float("nan"))
         self.buf_pitch.append(float(feat.pitch) if feat.pitch is not None else float("nan"))
         self.buf_roll.append(float(feat.roll) if feat.roll is not None else float("nan"))
+        self.buf_gaze_yaw.append(float(feat.gaze_yaw) if feat.gaze_yaw is not None else float("nan"))
+        self.buf_gaze_pitch.append(float(feat.gaze_pitch) if feat.gaze_pitch is not None else float("nan"))
 
         self.buf_dist_cat.append(str(feat.distance_cat) if feat.distance_cat is not None else None)
 
@@ -80,6 +84,8 @@ class WindowAggregator:
         yaw_s = safe_stats(self.buf_yaw)
         pit_s = safe_stats(self.buf_pitch)
         rol_s = safe_stats(self.buf_roll)
+        gaze_yaw_s = safe_stats(self.buf_gaze_yaw)
+        gaze_pitch_s = safe_stats(self.buf_gaze_pitch)
 
         minutes = self.window_seconds / 60.0
 
@@ -105,6 +111,10 @@ class WindowAggregator:
             pitch_std=pit_s["std"],
             roll_mean=rol_s["mean"],
             roll_std=rol_s["std"],
+            gaze_yaw_mean=gaze_yaw_s["mean"],
+            gaze_yaw_std=gaze_yaw_s["std"],
+            gaze_pitch_mean=gaze_pitch_s["mean"],
+            gaze_pitch_std=gaze_pitch_s["std"],
             blink_rate_bpm=float(blink_rate_bpm) if blink_rate_bpm is not None else None,
             distance_cat_mode=dist_mode,
         )

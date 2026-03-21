@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Optional, Tuple, Dict, Any, List
@@ -114,13 +113,10 @@ def _crop_bbox_from_idxs(
     roi = frame_bgr[y0i:y1i, x0i:x1i]
     if roi.size == 0:
         return None
-    print("ROI shape:", roi.shape)
     return roi.copy()
 
 
 class VisionExtractor:
-
-
     def __init__(
         self,
         *,
@@ -152,25 +148,34 @@ class VisionExtractor:
             return None
         if self._gaze_model is not None:
             return self._gaze_model
-        from ml_cnn.infer import load_model
-        self._gaze_model = load_model(self.gaze_ckpt_path)
+        try:
+            from ml_cnn.infer import load_model
+            print("Loading gaze model from:", self.gaze_ckpt_path)
+            self._gaze_model = load_model(self.gaze_ckpt_path)
+            print("Gaze model loaded successfully")
+        except Exception as e:
+            print("Load gaze model failed:", e)
+            self._gaze_model = None
         return self._gaze_model
 
     def _predict_gaze(self, roi_bgr: np.ndarray) -> Optional[np.ndarray]:
         """Predict yaw/pitch from ROI."""
+
         model = self._ensure_gaze_model()
         if model is None:
             return None
-
+        print("Running gaze prediction...")
         # Preferred helper
         try:
             from ml_cnn.infer import predict_array  # type: ignore
             pred = predict_array(model, roi_bgr, resize_hw=self.gaze_resize_hw)
             arr = np.asarray(pred, dtype=np.float32).reshape(-1)
+            print("raw gaze arr:", arr)
             if arr.size >= 2 and np.isfinite(arr[:2]).all():
+                print("return gaze:", arr[:2])
                 return arr[:2]
-        except Exception:
-            pass
+        except Exception as e:
+            print("predict_array failed:", e)
 
         # Fallback minimal
         try:
@@ -189,13 +194,13 @@ class VisionExtractor:
             out = np.asarray(out, dtype=np.float32).reshape(-1)
             if out.size >= 2 and np.isfinite(out[:2]).all():
                 return out[:2]
-        except Exception:
+        except Exception as e:
+            print("fallback gaze failed:", e)
             return None
 
         return None
 
     def _crop_eye_roi(self, frame_bgr: np.ndarray, lms_xy: np.ndarray) -> Optional[np.ndarray]:
-
         if lms_xy is None or lms_xy.shape[0] < 400:
             return None
 
