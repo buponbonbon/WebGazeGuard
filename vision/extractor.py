@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple, Dict, Any, List
+from collections import deque
 
 import numpy as np
 
@@ -135,6 +136,8 @@ class VisionExtractor:
 
         self.distance_calib = distance_calib
         self._last_s_px: Optional[float] = None
+        self._dist_buf = deque()
+        self._window_ms = 2500  # 2.5-second sliding window based on timestamp
 
         self.gaze_ckpt_path = gaze_ckpt_path
         self.gaze_every_n = max(1, int(gaze_every_n_frames))
@@ -234,7 +237,17 @@ class VisionExtractor:
         # --- distance estimation (Z = Z0 * s0 / s) ---
         s_px = _interocular_px(lms_xy)
         self._last_s_px = float(s_px) if np.isfinite(s_px) else None
-        distance_cm = estimate_distance_cm(s_px, self.distance_calib) if self.distance_calib is not None else None
+        distance_cm_raw = estimate_distance_cm(s_px, self.distance_calib) if self.distance_calib is not None else None
+        if distance_cm_raw is not None and np.isfinite(distance_cm_raw):
+            self._dist_buf.append((int(timestamp_ms), float(distance_cm_raw)))
+        else:
+            self._dist_buf.append((int(timestamp_ms), float("nan")))
+
+        while self._dist_buf and (int(timestamp_ms) - self._dist_buf[0][0]) > self._window_ms:
+            self._dist_buf.popleft()
+
+        valid_dist = [v for (_, v) in self._dist_buf if np.isfinite(v)]
+        distance_cm = float(np.median(valid_dist)) if valid_dist else None
         distance_cat = _distance_category(distance_cm)
 
         ear_l, ear_r, ear_m = compute_ear_both_eyes(lms_xy)
