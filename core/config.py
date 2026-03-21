@@ -1,7 +1,7 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -25,3 +25,6 @@ class Config:
     landmark_model_path: str = "face_landmarker.task"
     distance_near_cm: float = 40.0
     distance_far_cm: float = 75.0
+
+    # Gaze CNN checkpoint (set to real path to enable gaze)
+    gaze_ckpt_path: Optional[str] = "ml_cnn/checkpoints/best_model_custom_k4.pt"
