@@ -1,6 +1,5 @@
 from __future__ import annotations
-from core.schemas import WindowFeatures, NLPFeatures, RiskOutput
-from dataclasses import asdict
+from core.schemas import CVFeatures, WindowFeatures, NLPFeatures, RiskOutput
 from typing import Optional, Dict, Tuple, List
 import re
 
@@ -100,6 +99,35 @@ def _posture_risk(pitch_mean: Optional[float], yaw_mean: Optional[float]) -> Tup
     return score, "TILT"
 
 
+
+
+def _gaze_risk(cv: Optional[CVFeatures]) -> Tuple[float, Optional[str]]:
+    """
+    Lightweight gaze contribution from the latest frame only.
+    Keep this intentionally weak so it supplements, not overrides,
+    blink/distance/posture.
+    """
+    if cv is None:
+        return 0.0, None
+
+    gaze_yaw = getattr(cv, "gaze_yaw", None)
+    gaze_pitch = getattr(cv, "gaze_pitch", None)
+    if gaze_yaw is None and gaze_pitch is None:
+        return 0.0, None
+
+    gy = abs(float(gaze_yaw)) if gaze_yaw is not None else 0.0
+    gp = abs(float(gaze_pitch)) if gaze_pitch is not None else 0.0
+
+    # Conservative thresholds to avoid overreacting to noisy gaze estimates.
+    yaw_s = _lin_score(gy, lo=12.0, hi=25.0)
+    pitch_s = _lin_score(gp, lo=8.0, hi=18.0)
+    score = _clip01(0.65 * yaw_s + 0.35 * pitch_s)
+
+    if score < 0.6:
+        return score, None
+    return score, "gaze_off_center"
+
+
 def _nlp_risk(nlp: Optional[NLPFeatures]) -> Tuple[float, Optional[str], float]:
     # map discomfort_level
     if nlp is None:
@@ -160,25 +188,29 @@ def assess_risk(
     nlp: Optional[NLPFeatures] = None,
     *,
     weights: Optional[Dict[str, float]] = None,
+    cv: Optional[CVFeatures] = None,
 ) -> RiskOutput:
 
     # default weights
     w = weights or {
-        "blink": 0.30,
+        "blink": 0.25,
         "distance": 0.25,
-        "posture": 0.25,
+        "posture": 0.20,
+        "gaze": 0.10,
         "nlp": 0.20,
     }
 
     blink_s = _blink_risk(window.blink_rate_bpm)
     dist_s, dist_flag = _dist_risk(window.distance_cat_mode)
     post_s, posture_flag = _posture_risk(window.pitch_mean, window.yaw_mean)
+    gaze_s, gaze_flag = _gaze_risk(cv)
     nlp_s, nlp_lab, _ = _nlp_risk(nlp)
 
     components = {
         "blink": blink_s,
         "distance": dist_s,
         "posture": post_s,
+        "gaze": gaze_s,
         "nlp": nlp_s,
     }
 
@@ -193,6 +225,8 @@ def assess_risk(
         exp_bits.append(dist_flag)
     if posture_flag in ("FORWARD_HEAD", "TILT"):
         exp_bits.append(posture_flag)
+    if gaze_flag:
+        exp_bits.append(gaze_flag)
     if nlp_lab and nlp_lab != "None" and nlp_s >= 0.4:
         exp_bits.append(f"symptom_{nlp_lab}")
 
