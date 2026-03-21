@@ -63,9 +63,13 @@ export function MetricsGrid() {
     } else {
       const gy = Number(gazeYaw ?? 0);
       const gp = Number(gazePitch ?? 0);
-      cGaze.querySelector('[data-value]').textContent = `${Math.round(gy)}° / ${Math.round(gp)}°`;
+      const RAD2DEG = 180 / Math.PI;
+      const yawDeg = gy * RAD2DEG;
+      const pitchDeg = gp * RAD2DEG;
+
+      cGaze.querySelector('[data-value]').textContent = `${yawDeg.toFixed(1)}° / ${pitchDeg.toFixed(1)}°`;
       cGaze.querySelector('[data-status]').textContent =
-        (Math.abs(gy) > 12 || Math.abs(gp) > 8) ? 'Off-center' : 'Centered';
+        (Math.abs(yawDeg) > 12 || Math.abs(pitchDeg) > 8) ? 'Off-center' : 'Centered';
     }
 
     const yaw = Number(m.head_pose_yaw_deg ?? 0);
