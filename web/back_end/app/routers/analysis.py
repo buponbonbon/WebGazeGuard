@@ -56,7 +56,8 @@ async def _safe_send_text(ws: WebSocket, payload: dict) -> bool:
 @router.websocket("/ws/stream")
 async def ws_stream(ws: WebSocket):
     await ws.accept()
-    state = build_pipeline(Config(), gaze_ckpt_path=None)
+    cfg = Config()
+    state = build_pipeline(cfg, gaze_ckpt_path=getattr(cfg, "gaze_ckpt_path", None))
 
     try:
         # DEMO MODE: still consume first message, but skip token validation
@@ -206,6 +207,9 @@ async def ws_stream(ws: WebSocket):
                     # Neutral fallback for UI so it doesn't scream "too close" during warm-up/un-calibrated state.
                     dist = 60.0
 
+                gaze_yaw = getattr(cvf, "gaze_yaw", None)
+                gaze_pitch = getattr(cvf, "gaze_pitch", None)
+
                 out = FrameAnalysisOut(
                     ts_ms=ts_ms,
                     metrics=Metrics(
@@ -216,6 +220,8 @@ async def ws_stream(ws: WebSocket):
                         distance_cm=dist,
                         strain_risk=float(getattr(risk, "risk_score", 0.0) or 0.0) if risk is not None else 0.0,
                         posture_flag=getattr(risk, "posture_flag", None) if risk is not None else None,
+                        gaze_yaw_deg=float(gaze_yaw) if gaze_yaw is not None else None,
+                        gaze_pitch_deg=float(gaze_pitch) if gaze_pitch is not None else None,
                     ),
                 )
 

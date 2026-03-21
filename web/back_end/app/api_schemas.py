@@ -26,6 +26,8 @@ class Metrics(BaseModel):
     distance_cm: float
     strain_risk: float  # 0..1
     posture_flag: Optional[Literal["OK", "FORWARD_HEAD", "TILT"]] = None
+    gaze_yaw_deg: Optional[float] = None
+    gaze_pitch_deg: Optional[float] = None
 
 class FrameAnalysisOut(BaseModel):
     ts_ms: int

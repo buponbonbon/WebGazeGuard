@@ -67,6 +67,12 @@ class WindowFeatures:
     roll_mean: Optional[float] = None
     roll_std: Optional[float] = None
 
+    # Gaze statistics in the window
+    gaze_yaw_mean: Optional[float] = None
+    gaze_yaw_std: Optional[float] = None
+    gaze_pitch_mean: Optional[float] = None
+    gaze_pitch_std: Optional[float] = None
+
     # Blink rate (blinks per minute)
     blink_rate_bpm: Optional[float] = None
 
