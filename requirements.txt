@@ -1,23 +1,39 @@
+# ===== Core ML / CV =====
 torch
 torchvision
-scikit-learn
 numpy==1.26.4
+scikit-learn
 h5py
 pandas
 opencv-python
 matplotlib
 mediapipe>=0.10.20
+
+# ===== NLP =====
 transformers>=4.36.0
 sentencepiece>=0.1.99
+sentence-transformers
+
+# ===== RAG / Chatbot =====
+pypdf
+faiss-cpu==1.7.4
+python-dotenv
+google-genai
+
+# ===== Backend =====
 fastapi
 uvicorn
 python-multipart
-python-jose
-passlib[bcrypt]
-pydantic-settings
-pydantic
-email-validator
-sqlalchemy
-PyJWT
 websockets
+
+# ===== Auth / Security =====
+python-jose
+PyJWT
+passlib[bcrypt]
 bcrypt==3.2.2
+
+# ===== Database / Config =====
+sqlalchemy
+pydantic
+pydantic-settings
+email-validator
