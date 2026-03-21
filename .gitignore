@@ -51,3 +51,6 @@ web/front_end/node_modules/
 analysis/results/
 *.json.tmp
 *.log
+
+*.pkl
+*.index
