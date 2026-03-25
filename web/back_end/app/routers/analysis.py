@@ -289,6 +289,8 @@ def export_csv(user_id: int = Depends(get_current_user_id)):
         "distance_cm",
         "strain_risk",
         "posture_flag",
+        "gaze_yaw_deg",
+        "gaze_pitch_deg",
     ])
     for r in rows:
         m = r["metrics"]
@@ -301,6 +303,8 @@ def export_csv(user_id: int = Depends(get_current_user_id)):
             m["distance_cm"],
             m["strain_risk"],
             m.get("posture_flag", ""),
+            m.get("gaze_yaw_deg", ""),
+            m.get("gaze_pitch_deg", "")
         ])
     buf.seek(0)
     return StreamingResponse(
