@@ -164,15 +164,15 @@ class VisionExtractor:
         model = self._ensure_gaze_model()
         if model is None:
             return None
-        print("Running gaze prediction...")
+        #print("Running gaze prediction...")
         # Preferred helper
         try:
             from ml_cnn.infer import predict_array  # type: ignore
             pred = predict_array(model, roi_bgr, resize_hw=self.gaze_resize_hw)
             arr = np.asarray(pred, dtype=np.float32).reshape(-1)
-            print("raw gaze arr:", arr)
+            #print("raw gaze arr:", arr)
             if arr.size >= 2 and np.isfinite(arr[:2]).all():
-                print("return gaze:", arr[:2])
+                #print("return gaze:", arr[:2])
                 return arr[:2]
         except Exception as e:
             print("predict_array failed:", e)
@@ -261,6 +261,8 @@ class VisionExtractor:
         yaw = pose["yaw"] if pose else None
         pitch = pose["pitch"] if pose else None
         roll = pose["roll"] if pose else None
+
+        print(f"[EXTRACTOR] yaw={yaw}, pitch={pitch}, roll={roll}")
 
         blink_flag = self.blink.update(float(ear_m), timestamp_ms=timestamp_ms)
 
