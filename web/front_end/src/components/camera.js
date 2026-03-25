@@ -89,6 +89,17 @@ export function CameraStreamer({ onMetrics, getText }) {
             const payload = msg.payload;
             const m = payload?.metrics;
             console.log('METRICS:', m);
+
+            
+            const latency = payload?.ts_ms
+              ? Math.max(0, Date.now() - payload.ts_ms)
+              : null;
+
+            setHud({
+              mesh: 'TRUE',
+              latency: latency !== null ? `${latency}ms` : '--'
+            });
+
             if (payload) onMetrics?.(payload);
             return;
           }
@@ -125,7 +136,7 @@ export function CameraStreamer({ onMetrics, getText }) {
       const loop = () => {
         if (!running) return;
 
-        const t0 = performance.now();
+        
 
         const vw = video.videoWidth || 640;
         const vh = video.videoHeight || 360;
@@ -153,8 +164,7 @@ export function CameraStreamer({ onMetrics, getText }) {
           }
         }
 
-        const t1 = performance.now();
-        setHud({ mesh: 'TRUE', latency: `${Math.round(t1 - t0)}ms` });
+        
         requestAnimationFrame(loop);
       };
 
