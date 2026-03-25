@@ -20,6 +20,7 @@ from core.config import Config
 from core.pipeline import build_pipeline, step
 from vision.head_distance import calibrate_from_frames, DistanceCalib
 from fusion.risk_engine import assess_risk
+from nlp.classifier import get_classifier
 
 router = APIRouter()
 
@@ -59,6 +60,9 @@ async def ws_stream(ws: WebSocket):
     cfg = Config()
     state = build_pipeline(cfg, gaze_ckpt_path=getattr(cfg, "gaze_ckpt_path", None))
 
+    # Load NLP model 
+    clf = get_classifier(getattr(cfg, "nlp_ckpt_path", "nlp/checkpoints/best_model_PhoBert.pt"))
+
     try:
         # DEMO MODE: still consume first message, but skip token validation
         first = await ws.receive_text()
@@ -67,10 +71,12 @@ async def ws_stream(ws: WebSocket):
 
         # Keep last valid temporal window (warm-up frames may return win=None)
         last_valid_win = None
-
+        DEBUG_NLP = True
+        last_debug_text = None
         # Distance calibration via WS:
         # Client sends: {type:'calibrate', Z0_cm:60, n_frames:20}
         calib_collect = None  # dict with keys: Z0_cm, n_frames, s_values(list)
+
 
         while True:
             msg = await ws.receive_text()
@@ -103,6 +109,13 @@ async def ws_stream(ws: WebSocket):
             jpeg_b64 = data.get("jpeg_b64")
 
             frame_bgr = _decode_jpeg_b64(jpeg_b64)
+            text = data.get("text")
+            nlp_feat = None
+            if text:
+                try:
+                    nlp_feat = clf.predict_features(text)
+                except Exception:
+                    nlp_feat = None
             if frame_bgr is None:
                 continue
 
@@ -157,12 +170,21 @@ async def ws_stream(ws: WebSocket):
                                 return
                         calib_collect = None
 
+
+
                 if win is not None:
                     last_valid_win = win
                 win_for_risk = last_valid_win
 
                 # risk may be skipped during warm-up
-                risk = assess_risk(win_for_risk, nlp=None, weights=None) if win_for_risk is not None else None
+                risk = assess_risk(win_for_risk, nlp=nlp_feat, weights=None) if win_for_risk is not None else None
+                if DEBUG_NLP and win_for_risk is not None and text and text != last_debug_text:
+                    print("DEBUG text:", text)
+                    print("DEBUG nlp_feat:", nlp_feat)
+                    print("DEBUG risk_components:",
+                          getattr(risk, "risk_components", None) if risk is not None else None)
+                    print("DEBUG risk_score:", getattr(risk, "risk_score", None) if risk is not None else None)
+                    last_debug_text = text
 
                 # ---- robust metric mapping (handles differing attribute names) ----
                 # Blink rate: prefer temporal window if available
