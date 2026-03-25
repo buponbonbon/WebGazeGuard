@@ -1,7 +1,7 @@
 import { api } from '../lib/api.js';
 import { toast } from '../lib/toast.js';
 
-export function ChatBox() {
+export function ChatBox(opts = {}) {
   const shell = document.createElement('div');
   shell.className = 'flex flex-col bg-card-dark/50 rounded-2xl overflow-hidden border border-white/5 h-[340px] shadow-lg';
 
@@ -61,6 +61,7 @@ export function ChatBox() {
     if (!msg) return;
     input.value = '';
     addBubble(msg, 'me');
+    opts?.onUserMessage?.(msg);
 
     try {
       const out = await api('/api/chat', { method:'POST', body:{ message: msg } });
