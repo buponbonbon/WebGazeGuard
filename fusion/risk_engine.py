@@ -52,14 +52,16 @@ def _lin_score(x: float, lo: float, hi: float) -> float:
     return _clip01((x - lo) / (hi - lo))
 
 
-def _dist_risk(distance_cat_mode: Optional[str]) -> Tuple[float, Optional[str]]:
-    # category from vision.head_distance: "too_close" | "normal" | "too_far"
-    if not distance_cat_mode:
+def _dist_risk(distance_cm: Optional[float]) -> Tuple[float, Optional[str]]:
+    # Compute distance risk directly from the current estimated distance (cm)
+    # to avoid temporal lag from categorical modes.
+    if distance_cm is None:
         return 0.0, None
-    cat = distance_cat_mode.lower()
-    if cat == "too_close":
+
+    d = float(distance_cm)
+    if d < 50.0:
         return 1.0, "too_close"
-    if cat == "too_far":
+    if d > 70.0:
         return 0.4, "too_far"
     return 0.0, None
 
@@ -80,19 +82,27 @@ def _posture_risk(pitch_mean: Optional[float], yaw_mean: Optional[float]) -> Tup
     # pitch/yaw are degrees in your pipeline
     # large absolute angles suggest poor posture/neck strain
     # map flags to web Metrics schema: OK | FORWARD_HEAD | TILT
+    #print(f"[RISK INPUT] pitch_mean={pitch_mean}, yaw_mean={yaw_mean}")
+
     if pitch_mean is None and yaw_mean is None:
         return 0.0, None
 
     p = abs(float(pitch_mean)) if pitch_mean is not None else 0.0
     y = abs(float(yaw_mean)) if yaw_mean is not None else 0.0
 
-    # conservative thresholds
-    pitch_s = _lin_score(p, lo=10.0, hi=25.0)
-    yaw_s = _lin_score(y, lo=15.0, hi=35.0)
+    # slightly more sensitive thresholds than before
+    pitch_s = _lin_score(p, lo=8.0, hi=20.0)
+    yaw_s = _lin_score(y, lo=12.0, hi=28.0)
 
     score = _clip01(0.6 * pitch_s + 0.4 * yaw_s)
 
-    if score < 0.7:
+    # strong single-axis deviation can already trigger a flag
+    if p >= 18.0 and p >= y:
+        return max(score, 0.7), "FORWARD_HEAD"
+    if y >= 20.0 and y > p:
+        return max(score, 0.7), "TILT"
+
+    if score < 0.55:
         return score, None
     if p >= y:
         return score, "FORWARD_HEAD"
@@ -201,7 +211,12 @@ def assess_risk(
     }
 
     blink_s = _blink_risk(window.blink_rate_bpm)
-    dist_s, dist_flag = _dist_risk(window.distance_cat_mode)
+
+    dist_now = getattr(cv, "distance_cm", None) if cv is not None else None
+    if dist_now is None:
+        dist_now = getattr(window, "distance_cm", None)
+
+    dist_s, dist_flag = _dist_risk(dist_now)
     post_s, posture_flag = _posture_risk(window.pitch_mean, window.yaw_mean)
     gaze_s, gaze_flag = _gaze_risk(cv)
     nlp_s, nlp_lab, _ = _nlp_risk(nlp)
