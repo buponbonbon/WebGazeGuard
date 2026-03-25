@@ -1,7 +1,7 @@
 import { wsUrl } from '../lib/api.js';
 import { toast } from '../lib/toast.js';
 
-export function CameraStreamer({ onMetrics }) {
+export function CameraStreamer({ onMetrics, getText }) {
   const root = document.createElement('div');
   root.className =
     'relative flex flex-col items-center justify-center bg-black aspect-video rounded-2xl overflow-hidden border border-primary/20 shadow-2xl shadow-primary/5';
@@ -147,6 +147,7 @@ export function CameraStreamer({ onMetrics }) {
                 type: 'frame',
                 ts_ms: Date.now(),
                 jpeg_b64: jpeg,
+                text: getText ? getText() : null,
               })
             );
           }

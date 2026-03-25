@@ -42,7 +42,10 @@ export function Dashboard() {
   content.className = 'p-4 space-y-4 pb-28';
   page.appendChild(content);
 
+  let currentSymptomText = '';
+
   const camera = CameraStreamer({
+    getText: () => currentSymptomText,
     onMetrics: (payload) => {
       metrics.setMetrics(payload.metrics);
       const r = payload.metrics.strain_risk || 0;
@@ -55,7 +58,6 @@ export function Dashboard() {
   const metrics = MetricsGrid();
   content.appendChild(metrics);
 
-  // 🔥 ONLY CHANGE HERE (EXPORT CSV NO AUTH)
   const actions = document.createElement('div');
   actions.className = 'bg-card-dark border border-white/5 p-4 rounded-2xl flex items-center justify-between gap-3';
   actions.innerHTML = `
@@ -91,7 +93,11 @@ export function Dashboard() {
 
   content.appendChild(actions);
 
-  const chat = ChatBox();
+  const chat = ChatBox({
+    onUserMessage: (text) => {
+      currentSymptomText = text;
+    }
+  });
   content.appendChild(chat);
 
   top.querySelector('[data-noti]').addEventListener('click', ()=> {
